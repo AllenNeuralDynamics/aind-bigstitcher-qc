@@ -13,12 +13,22 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
+import bdv.ViewerImgLoader;
+import bdv.cache.CacheControl;
+import bdv.img.cache.VolatileGlobalCellCache;
 import mpicbg.spim.data.generic.sequence.BasicViewDescription;
+import mpicbg.spim.data.sequence.ImgLoader;
 import mpicbg.spim.data.sequence.ViewDescription;
 import mpicbg.spim.data.sequence.ViewId;
 import mpicbg.spim.data.sequence.ViewSetup;
@@ -26,9 +36,8 @@ import net.imglib2.*;
 import net.imglib2.img.array.ArrayImg;
 import net.imglib2.img.array.ArrayImgs;
 import net.imglib2.img.basictypeaccess.array.ByteArray;
-import net.imglib2.type.numeric.ARGBType;
-import net.imglib2.type.numeric.real.FloatType;
 import net.imglib2.type.numeric.integer.UnsignedByteType;
+import net.imglib2.type.numeric.real.FloatType;
 import net.imglib2.util.Intervals;
 import net.imglib2.view.Views;
 import net.imglib2.realtransform.AffineTransform3D;
@@ -38,11 +47,11 @@ import net.preibisch.mvrecon.fiji.spimdata.XmlIoSpimData2;
 import net.preibisch.mvrecon.process.downsampling.DownsampleTools;
 import net.preibisch.mvrecon.process.fusion.FusionTools;
 import net.preibisch.mvrecon.process.fusion.transformed.TransformView;
+import net.preibisch.mvrecon.Threads;
 import org.slf4j.LoggerFactory;
 import bdv.util.MipmapTransforms;
 import org.janelia.saalfeldlab.n5.Compression;
 import org.janelia.saalfeldlab.n5.DataType;
-import org.janelia.saalfeldlab.n5.DatasetAttributes;
 import org.janelia.saalfeldlab.n5.N5Writer;
 import org.janelia.saalfeldlab.n5.GzipCompression;
 import org.janelia.saalfeldlab.n5.imglib2.N5Utils;
@@ -61,15 +70,15 @@ public class TestColorOverlayOverlaps {
     // Choose interpolation: 1=linear, 0=nearest
     static final int INTERPOLATION = 1;
 
-    private static final Path OME_ZARR_ROOT = Paths.get("/results", "ome-zarr");
+    private static final Path OME_ZARR_ROOT = Paths.get("/results", "ome-zarr_4x");
     private static final String UNIT_PIXEL = "micrometer";
-    private static final int MAX_DOWNSAMPLING_LEVELS = 4;
+    private static final int MAX_DOWNSAMPLING_LEVELS = 5;
 
     public static void main(String[] args) throws Exception {
         final Logger rootLogger = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
         rootLogger.setLevel(Level.INFO);
 
-        final String xml = "/root/capsule/data/bigstitcher_affine.xml";
+        final String xml = "/root/capsule/data/bigstitcher_affine.split.xml";
         final SpimData2 spimData = new XmlIoSpimData2().load(xml);
         System.out.println("Loaded: " + xml);
 
@@ -123,7 +132,7 @@ public class TestColorOverlayOverlaps {
                     continue;
                 }
 
-                final RandomAccessibleInterval<ARGBType> argbCrop = overlayCropARGB(
+                final OverlayCompositor overlay = prepareOverlayCompositor(
                         spimData,
                         regs,
                         views,
@@ -133,10 +142,11 @@ public class TestColorOverlayOverlaps {
                 );
 
                 final String name = "overlay_tile" + tile1.illuminationId + "_tile" + tile2.illuminationId;
-                exportCropAsOmeZarr(argbCrop, name);
+                exportCropAsOmeZarr(overlay, "split-affine/" + name);
+                clearImgLoaderCache(spimData);
 
                 System.out.println("Created ARGB overlay crop for tiles (" + tile1.illuminationId + "," + tile2.illuminationId + ") "
-                        + Arrays.toString(argbCrop.dimensionsAsLongArray()));
+                        + Arrays.toString(overlay.spatialDimensions()));
             }
         }
     }
@@ -162,7 +172,7 @@ public class TestColorOverlayOverlaps {
                     continue;
                 }
 
-                final RandomAccessibleInterval<ARGBType> argbCrop = overlayCropARGB(
+                final OverlayCompositor overlay = prepareOverlayCompositor(
                         spimData,
                         regs,
                         views,
@@ -172,10 +182,11 @@ public class TestColorOverlayOverlaps {
                 );
 
                 final String name = "overlay_v" + v1.getViewSetupId() + "_v" + v2.getViewSetupId();
-                exportCropAsOmeZarr(argbCrop, "affine/" + name);
+                exportCropAsOmeZarr(overlay, "affine/" + name);
+                clearImgLoaderCache(spimData);
 
                 System.out.println("Created ARGB overlay crop for views (" + v1.getViewSetupId() + "," + v2.getViewSetupId() + ") "
-                        + Arrays.toString(argbCrop.dimensionsAsLongArray()));
+                        + Arrays.toString(overlay.spatialDimensions()));
             }
         }
     }
@@ -279,9 +290,8 @@ public class TestColorOverlayOverlaps {
         }
     }
 
-    /** Create a color overlay ARGB crop over the given bounding box.
-     *  It auto-selects only the views that overlap the crop and tints each differently. */
-    static RandomAccessibleInterval<ARGBType> overlayCropARGB(
+    /** Prepare metadata and transformed sources so crops can be rendered block-wise on demand. */
+    static OverlayCompositor prepareOverlayCompositor(
             final SpimData2 spimData,
             final Map<ViewId, AffineTransform3D> regs,
             final Collection<? extends ViewId> allViews,
@@ -300,10 +310,6 @@ public class TestColorOverlayOverlaps {
                 LazyFusionTools.assembleDimensions(allViews, vds),
                 LazyFusionTools.defaultAffineExpansion // small expansion to be conservative
         );
-        if (overlapping.isEmpty()) {
-            // Return an empty ARGB image of the crop size (all zeros)
-            return emptyARGB(FusionTools.getFusedZeroMinInterval(cropBB));
-        }
 
         // 2) Prepare transformed sources for each overlapping view (mapped into the crop)
         final List<RandomAccessibleInterval<FloatType>> transformedSources = new ArrayList<>(overlapping.size());
@@ -349,52 +355,8 @@ public class TestColorOverlayOverlaps {
                 colorIndexForSource[idx] = idx;
         }
 
-        // 4) Allocate ARGB output for the crop (zero-min with same dims as crop)
         final Interval outInterval = FusionTools.getFusedZeroMinInterval(cropBB);
-        final long[] dims = new long[outInterval.numDimensions()];
-        outInterval.dimensions(dims);
-        final ArrayImg<ARGBType, ?> out = ArrayImgs.argbs(dims);
-
-        // 5) Composite: per-pixel, tint each source and max-blend into output
-        final Cursor<ARGBType> cOut = Views.flatIterable(out).localizingCursor();
-        final List<RandomAccess<FloatType>> ras = new ArrayList<>(n);
-        for (RandomAccessibleInterval<FloatType> src : transformedSources)
-            ras.add(src.randomAccess());
-
-        final int[] pos = new int[dims.length];
-        while (cOut.hasNext()) {
-            final ARGBType outPix = cOut.next();
-            cOut.localize(pos); // 3D voxel position in zero-min crop coords
-
-            int dst = 0; // ARGB 0 == fully transparent black
-            for (int k = 0; k < n; k++) {
-                final RandomAccess<FloatType> ra = ras.get(k);
-                ra.setPosition(pos);
-
-                final float val = ra.get().getRealFloat();
-                if (val <= 0) continue; // skip zero
-
-                // Scale intensity into 0..255 (tweak DISPLAY_MAX to expected data range)
-                final int level = clampTo8bit((val / DISPLAY_MAX) * 255f);
-                // System.out.println(level);
-
-                // Apply per-illumination tint with intensity "level"
-                final int src = tint(palette[colorIndexForSource[k]], level);
-
-                // Per-channel max blend (good for alignment inspection)
-                dst = maxBlend(dst, src);
-            }
-            outPix.set(dst);
-        }
-
-        return out;
-    }
-
-    /** Create an empty ARGB image for the given zero-min interval. */
-    static RandomAccessibleInterval<ARGBType> emptyARGB(final Interval zeroMinInterval) {
-        final long[] dims = new long[zeroMinInterval.numDimensions()];
-        zeroMinInterval.dimensions(dims);
-        return ArrayImgs.argbs(dims);
+        return new OverlayCompositor(outInterval, transformedSources, palette, colorIndexForSource);
     }
 
     /** Map baseColor (ARGB, with 8-bit RGB) to a color whose RGB channels equal baseColor*level/255 and alpha=255. */
@@ -421,7 +383,7 @@ public class TestColorOverlayOverlaps {
     }
 
     private static void exportCropAsOmeZarr(
-            final RandomAccessibleInterval<ARGBType> argbCrop,
+            final OverlayCompositor overlay,
             final String name
     ) throws IOException {
         final Path outputFolder = OME_ZARR_ROOT.resolve(name).normalize();
@@ -432,41 +394,84 @@ public class TestColorOverlayOverlaps {
         Files.createDirectories(containerPath.getParent());
         deleteRecursivelyIfExists(containerPath);
 
-        final ArrayImg<UnsignedByteType, ByteArray> rgb5d = argbToRgb5d(argbCrop);
-        final long[] dims5d = rgb5d.dimensionsAsLongArray();
-        final long[] spatialDims = Arrays.copyOf(dims5d, 3);
+        final long[] spatialDims = overlay.spatialDimensions();
+        final long[] dims5d = new long[] { spatialDims[0], spatialDims[1], spatialDims[2], 3, 1 };
         final int[] blockSize = defaultBlockSize(spatialDims);
         final int[][] downsamplings = defaultDownsamplings(spatialDims);
-        final Compression compression = new GzipCompression();
+        final Compression compression = new GzipCompression(5);
 
-        final MultiResolutionLevelInfo[] pyramid;
-        try (final N5Writer writer = URITools.instantiateN5Writer(
-                StorageFormat.ZARR,
-                URITools.toURI(containerPath.toString()))) {
+        final ExecutorService executor = Executors.newFixedThreadPool(Threads.numThreads());
+        try {
+            try (final N5Writer writer = URITools.instantiateN5Writer(
+                    StorageFormat.ZARR,
+                    URITools.toURI(containerPath.toString()))) {
 
-            pyramid = N5ApiTools.setupMultiResolutionPyramid(
-                    writer,
-                    level -> Integer.toString(level),
-                    DataType.UINT8,
-                    dims5d,
-                    compression,
-                    blockSize,
-                    downsamplings
-            );
+                final MultiResolutionLevelInfo[] pyramid = N5ApiTools.setupMultiResolutionPyramid(
+                        writer,
+                        level -> Integer.toString(level),
+                        DataType.UINT8,
+                        dims5d,
+                        compression,
+                        blockSize,
+                        downsamplings
+                );
 
-            final DatasetAttributes s0Attributes = writer.getDatasetAttributes(pyramid[0].dataset);
-            N5Utils.saveBlock(rgb5d, writer, pyramid[0].dataset, s0Attributes);
-
-            writeDownsampledLevels(writer, pyramid);
-            writeOmeNgffMetadata(writer, pyramid, containerPath.getFileName().toString());
+                writeS0Blocks(overlay, writer, pyramid[0], executor);
+                writeDownsampledLevels(writer, pyramid, executor);
+                writeOmeNgffMetadata(writer, pyramid, containerPath.getFileName().toString());
+            }
+        } finally {
+            shutdownExecutor(executor);
         }
 
         System.out.println("Exported multiscale OME-Zarr crop to " + containerPath);
     }
 
+    private static void writeS0Blocks(
+            final OverlayCompositor overlay,
+            final N5Writer writer,
+            final MultiResolutionLevelInfo levelInfo,
+            final ExecutorService executor
+    ) {
+        final long[] dims3d = overlay.spatialDimensions();
+        final int[] blockSize3d = new int[] {
+                levelInfo.blockSize[0],
+                levelInfo.blockSize[1],
+                levelInfo.blockSize[2]
+        };
+
+        final List<long[][]> grid = N5ApiTools.assembleJobs(dims3d, blockSize3d);
+        final List<Future<?>> futures = new ArrayList<>();
+
+        for (long[][] gridBlock : grid) {
+            final long[][] blockCopy = cloneGridBlock(gridBlock);
+            futures.add(executor.submit(() -> {
+                final long[] blockMin = blockCopy[0];
+                final long[] blockSize = blockCopy[1];
+                final long[] blockMax = new long[3];
+                for (int d = 0; d < 3; d++)
+                    blockMax[d] = Math.min(dims3d[d] - 1, blockMin[d] + blockSize[d] - 1);
+
+                final int sizeX = (int)(blockMax[0] - blockMin[0] + 1);
+                final int sizeY = (int)(blockMax[1] - blockMin[1] + 1);
+                final int sizeZ = (int)(blockMax[2] - blockMin[2] + 1);
+
+                final ArrayImg<UnsignedByteType, ByteArray> blockImg = ArrayImgs.unsignedBytes(sizeX, sizeY, sizeZ, 3, 1);
+                overlay.renderBlock(blockMin, blockImg);
+
+                final long[] gridOffset = new long[] { blockCopy[2][0], blockCopy[2][1], blockCopy[2][2], 0, 0 };
+                N5Utils.saveNonEmptyBlock(blockImg, writer, levelInfo.dataset, gridOffset, new UnsignedByteType());
+                return null;
+            }));
+        }
+
+        waitForFutures(futures);
+    }
+
     private static void writeDownsampledLevels(
             final N5Writer writer,
-            final MultiResolutionLevelInfo[] pyramid
+            final MultiResolutionLevelInfo[] pyramid,
+            final ExecutorService executor
     ) {
         if (pyramid.length <= 1)
             return;
@@ -475,32 +480,40 @@ public class TestColorOverlayOverlaps {
             final MultiResolutionLevelInfo current = pyramid[level];
             final MultiResolutionLevelInfo previous = pyramid[level - 1];
 
+            final long[] dims3d = new long[] {
+                    current.dimensions[0],
+                    current.dimensions[1],
+                    current.dimensions[2]
+            };
+
             final int[] blockSize3d = new int[] {
                     current.blockSize[0],
                     current.blockSize[1],
                     current.blockSize[2]
             };
 
-            final long[] levelDims3d = new long[] {
-                    current.dimensions[0],
-                    current.dimensions[1],
-                    current.dimensions[2]
-            };
+            final List<long[][]> grid = N5ApiTools.assembleJobs(dims3d, blockSize3d);
+            final List<Future<?>> futures = new ArrayList<>();
 
-            final List<long[][]> grid = N5ApiTools.assembleJobs(levelDims3d, blockSize3d);
-
-            for (int channel = 0; channel < current.dimensions[3]; channel++) {
-                for (long[][] gridBlock : grid) {
-                    N5ApiTools.writeDownsampledBlock5dOMEZARR(
-                            writer,
-                            current,
-                            previous,
-                            gridBlock,
-                            channel,
-                            0L
-                    );
+            for (long[][] gridBlock : grid) {
+                for (int channel = 0; channel < current.dimensions[3]; channel++) {
+                    final long[][] blockCopy = cloneGridBlock(gridBlock);
+                    final long channelIndex = channel;
+                    futures.add(executor.submit(() -> {
+                        N5ApiTools.writeDownsampledBlock5dOMEZARR(
+                                writer,
+                                current,
+                                previous,
+                                blockCopy,
+                                channelIndex,
+                                0L
+                        );
+                        return null;
+                    }));
                 }
             }
+
+            waitForFutures(futures);
         }
     }
 
@@ -527,49 +540,138 @@ public class TestColorOverlayOverlaps {
         writer.setAttribute("/", "multiscales", metadata);
     }
 
-    private static ArrayImg<UnsignedByteType, ByteArray> argbToRgb5d(
-            final RandomAccessibleInterval<ARGBType> argb
-    ) {
-        final int nd = argb.numDimensions();
-        final long sizeX = argb.dimension(0);
-        final long sizeY = argb.dimension(1);
-        final long sizeZ = nd > 2 ? argb.dimension(2) : 1L;
+    private static void waitForFutures(final List<Future<?>> futures) {
+        for (Future<?> future : futures) {
+            try {
+                future.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted while processing OME-Zarr blocks", e);
+            } catch (ExecutionException e) {
+                throw new RuntimeException("Failed to process OME-Zarr blocks", e.getCause());
+            }
+        }
+    }
 
-        final ArrayImg<UnsignedByteType, ByteArray> out = ArrayImgs.unsignedBytes(sizeX, sizeY, sizeZ, 3, 1);
-        final Cursor<ARGBType> inCursor = Views.zeroMin(argb).localizingCursor();
-        final RandomAccess<UnsignedByteType> outAccess = out.randomAccess();
+    private static long[][] cloneGridBlock(final long[][] gridBlock) {
+        final long[][] copy = new long[gridBlock.length][];
+        for (int i = 0; i < gridBlock.length; i++)
+            copy[i] = gridBlock[i].clone();
+        return copy;
+    }
 
-        final long[] inputPos = new long[Math.max(3, nd)];
-        final long[] target = new long[] {0, 0, 0, 0, 0};
+    private static void shutdownExecutor(final ExecutorService executor) {
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(1, TimeUnit.MINUTES)) {
+                executor.shutdownNow();
+                executor.awaitTermination(30, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 
-        while (inCursor.hasNext()) {
-            final ARGBType pixel = inCursor.next();
-            inCursor.localize(inputPos);
+    private static void clearImgLoaderCache(final SpimData2 spimData) {
+        final ImgLoader imgLoader =
+                spimData.getSequenceDescription().getImgLoader();
+        if (imgLoader instanceof ViewerImgLoader) {
+            final CacheControl cacheControl = ((ViewerImgLoader) imgLoader).getCacheControl();
+            if (cacheControl == null)
+                return;
+            if (cacheControl instanceof VolatileGlobalCellCache) {
+                ((VolatileGlobalCellCache) cacheControl).clearCache();
+                System.out.println("Clearing cache");
+            } else {
+                try {
+                    cacheControl.getClass().getMethod("clearCache").invoke(cacheControl);
+                    System.out.println("Clearing cache");
+                } catch (Exception ignored) {
+                    // ignore if cache cannot be cleared explicitly
+                }
+            }
+        }
+    }
 
-            target[0] = inputPos[0];
-            target[1] = inputPos[1];
-            target[2] = nd > 2 ? inputPos[2] : 0L;
-            target[4] = 0L;
+    private static final class OverlayCompositor {
+        private final List<RandomAccessibleInterval<FloatType>> sources;
+        private final int[] palette;
+        private final int[] colorIndexForSource;
+        private final long[] spatialDims;
 
-            final int value = pixel.get();
-            final int r = (value >> 16) & 0xff;
-            final int g = (value >> 8) & 0xff;
-            final int b = value & 0xff;
-
-            target[3] = 0;
-            outAccess.setPosition(target);
-            outAccess.get().set(r);
-
-            target[3] = 1;
-            outAccess.setPosition(target);
-            outAccess.get().set(g);
-
-            target[3] = 2;
-            outAccess.setPosition(target);
-            outAccess.get().set(b);
+        OverlayCompositor(
+                final Interval interval,
+                final List<RandomAccessibleInterval<FloatType>> sources,
+                final int[] palette,
+                final int[] colorIndexForSource
+        ) {
+            this.sources = new ArrayList<>(sources);
+            this.palette = palette;
+            this.colorIndexForSource = colorIndexForSource.clone();
+            this.spatialDims = new long[3];
+            interval.dimensions(this.spatialDims);
         }
 
-        return out;
+        long[] spatialDimensions() {
+            return spatialDims.clone();
+        }
+
+        void renderBlock(final long[] blockMin, final ArrayImg<UnsignedByteType, ByteArray> target) {
+            final int sizeX = (int)target.dimension(0);
+            final int sizeY = (int)target.dimension(1);
+            final int sizeZ = (int)target.dimension(2);
+            if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0)
+                return;
+
+            final ByteArray access = (ByteArray)target.update(null);
+            final byte[] data = access.getCurrentStorageArray();
+            final int sliceSize = sizeX * sizeY;
+            final int volumeSize = sliceSize * sizeZ;
+            final int[] channelOffsets = new int[] { 0, volumeSize, 2 * volumeSize };
+
+            final int sourceCount = sources.size();
+            final List<RandomAccessibleInterval<FloatType>> localSources = this.sources;
+            final int[] paletteLocal = this.palette;
+            final int[] colorIndex = this.colorIndexForSource;
+
+            IntStream.range(0, sizeZ).parallel().forEach(localZ -> {
+                final long globalZ = blockMin[2] + localZ;
+                final long[] pos = new long[] { 0L, 0L, globalZ };
+                final ArrayList<RandomAccess<FloatType>> ras = new ArrayList<>(sourceCount);
+                for (int s = 0; s < sourceCount; s++)
+                    ras.add(localSources.get(s).randomAccess());
+
+                for (int y = 0; y < sizeY; y++) {
+                    pos[1] = blockMin[1] + y;
+                    final int rowOffset = (localZ * sizeY + y) * sizeX;
+                    for (int x = 0; x < sizeX; x++) {
+                        pos[0] = blockMin[0] + x;
+                        int argb = 0;
+                        for (int s = 0; s < sourceCount; s++) {
+                            final RandomAccess<FloatType> ra = ras.get(s);
+                            ra.setPosition(pos);
+                            final float val = ra.get().getRealFloat();
+                            if (val <= 0)
+                                continue;
+                            final int level = clampTo8bit((val / DISPLAY_MAX) * 255f);
+                            if (level == 0)
+                                continue;
+                            final int srcColor = tint(paletteLocal[colorIndex[s]], level);
+                            argb = maxBlend(argb, srcColor);
+                        }
+
+                        if (argb == 0)
+                            continue;
+
+                        final int baseIndex = rowOffset + x;
+                        data[channelOffsets[0] + baseIndex] = (byte)((argb >> 16) & 0xff);
+                        data[channelOffsets[1] + baseIndex] = (byte)((argb >> 8) & 0xff);
+                        data[channelOffsets[2] + baseIndex] = (byte)(argb & 0xff);
+                    }
+                }
+            });
+        }
     }
 
     private static int[] defaultBlockSize(final long[] spatialDims) {
@@ -583,7 +685,7 @@ public class TestColorOverlayOverlaps {
     }
 
     private static int blockSizeFor(final long dim) {
-        return (int)Math.max(1, Math.min(dim, 64));
+        return (int)Math.max(1, Math.min(dim, 128));
     }
 
     private static int[][] defaultDownsamplings(final long[] spatialDims) {
