@@ -1,17 +1,23 @@
 package net.preibisch.mvrecon.process.fusion.lazy;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
-import ij.IJ;
-import ij.ImagePlus;
 import mpicbg.spim.data.generic.sequence.BasicViewDescription;
 import mpicbg.spim.data.sequence.ViewDescription;
 import mpicbg.spim.data.sequence.ViewId;
@@ -19,8 +25,10 @@ import mpicbg.spim.data.sequence.ViewSetup;
 import net.imglib2.*;
 import net.imglib2.img.array.ArrayImg;
 import net.imglib2.img.array.ArrayImgs;
+import net.imglib2.img.basictypeaccess.array.ByteArray;
 import net.imglib2.type.numeric.ARGBType;
 import net.imglib2.type.numeric.real.FloatType;
+import net.imglib2.type.numeric.integer.UnsignedByteType;
 import net.imglib2.util.Intervals;
 import net.imglib2.view.Views;
 import net.imglib2.realtransform.AffineTransform3D;
@@ -31,6 +39,19 @@ import net.preibisch.mvrecon.process.downsampling.DownsampleTools;
 import net.preibisch.mvrecon.process.fusion.FusionTools;
 import net.preibisch.mvrecon.process.fusion.transformed.TransformView;
 import org.slf4j.LoggerFactory;
+import bdv.util.MipmapTransforms;
+import org.janelia.saalfeldlab.n5.Compression;
+import org.janelia.saalfeldlab.n5.DataType;
+import org.janelia.saalfeldlab.n5.DatasetAttributes;
+import org.janelia.saalfeldlab.n5.N5Writer;
+import org.janelia.saalfeldlab.n5.GzipCompression;
+import org.janelia.saalfeldlab.n5.imglib2.N5Utils;
+import org.janelia.saalfeldlab.n5.universe.StorageFormat;
+import org.janelia.saalfeldlab.n5.universe.metadata.ome.ngff.v04.OmeNgffMultiScaleMetadata;
+import net.preibisch.mvrecon.process.n5api.N5ApiTools;
+import net.preibisch.mvrecon.process.n5api.N5ApiTools.MultiResolutionLevelInfo;
+import net.preibisch.mvrecon.fiji.spimdata.imgloaders.OMEZarrAttibutes;
+import util.URITools;
 
 public class TestColorOverlayOverlaps {
 
@@ -39,6 +60,10 @@ public class TestColorOverlayOverlaps {
 
     // Choose interpolation: 1=linear, 0=nearest
     static final int INTERPOLATION = 1;
+
+    private static final Path OME_ZARR_ROOT = Paths.get("/results", "ome-zarr");
+    private static final String UNIT_PIXEL = "micrometer";
+    private static final int MAX_DOWNSAMPLING_LEVELS = 4;
 
     public static void main(String[] args) throws Exception {
         final Logger rootLogger = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
@@ -61,7 +86,7 @@ public class TestColorOverlayOverlaps {
         // FIXME: is this correct??.
         // To not scale, use Double.NaN for both.
         final double anisotropy = 1.337; // or Double.NaN
-        final double downsampling = 16;  // or Double.NaN
+        final double downsampling = 4;  // or Double.NaN
         final Map<ViewId, AffineTransform3D> regs = TransformVirtual.adjustAllTransforms(
                 views,
                 spimData.getViewRegistrations().getViewRegistrations(),
@@ -87,7 +112,7 @@ public class TestColorOverlayOverlaps {
             final Map<ViewId, AffineTransform3D> regs,
             final List<ViewId> views,
             final List<IlluminationBounds> illuminationBounds
-    ) {
+    ) throws IOException {
         for (int i = 0; i < illuminationBounds.size(); i++) {
             for (int j = i + 1; j < illuminationBounds.size(); j++) {
                 final IlluminationBounds tile1 = illuminationBounds.get(i);
@@ -108,8 +133,7 @@ public class TestColorOverlayOverlaps {
                 );
 
                 final String name = "overlay_tile" + tile1.illuminationId + "_tile" + tile2.illuminationId;
-                ImagePlus imp = net.imglib2.img.display.imagej.ImageJFunctions.wrap(argbCrop, name);
-                IJ.saveAsTiff(imp, "/results/" + name + ".tif");
+                exportCropAsOmeZarr(argbCrop, name);
 
                 System.out.println("Created ARGB overlay crop for tiles (" + tile1.illuminationId + "," + tile2.illuminationId + ") "
                         + Arrays.toString(argbCrop.dimensionsAsLongArray()));
@@ -122,7 +146,7 @@ public class TestColorOverlayOverlaps {
             final Map<ViewId, AffineTransform3D> regs,
             final List<ViewId> views,
             final Map<ViewId, ? extends BasicViewDescription<ViewSetup>> viewDescriptions
-    ) {
+    ) throws IOException {
         for (int i = 0; i < views.size(); i++) {
             for (int j = i + 1; j < views.size(); j++) {
                 final ViewId v1 = views.get(i);
@@ -148,8 +172,7 @@ public class TestColorOverlayOverlaps {
                 );
 
                 final String name = "overlay_v" + v1.getViewSetupId() + "_v" + v2.getViewSetupId();
-                ImagePlus imp = net.imglib2.img.display.imagej.ImageJFunctions.wrap(argbCrop, name);
-                IJ.saveAsTiff(imp, "/results/affine/" + name + ".tif");
+                exportCropAsOmeZarr(argbCrop, "affine/" + name);
 
                 System.out.println("Created ARGB overlay crop for views (" + v1.getViewSetupId() + "," + v2.getViewSetupId() + ") "
                         + Arrays.toString(argbCrop.dimensionsAsLongArray()));
@@ -395,6 +418,216 @@ public class TestColorOverlayOverlaps {
 
     static int clampTo8bit(final float v) {
         return (v <= 0) ? 0 : (v >= 255f ? 255 : (int) v);
+    }
+
+    private static void exportCropAsOmeZarr(
+            final RandomAccessibleInterval<ARGBType> argbCrop,
+            final String name
+    ) throws IOException {
+        final Path outputFolder = OME_ZARR_ROOT.resolve(name).normalize();
+        final Path containerPath = outputFolder.getParent() == null
+                ? Paths.get(outputFolder.toString() + ".ome.zarr")
+                : outputFolder.getParent().resolve(outputFolder.getFileName().toString() + ".ome.zarr");
+
+        Files.createDirectories(containerPath.getParent());
+        deleteRecursivelyIfExists(containerPath);
+
+        final ArrayImg<UnsignedByteType, ByteArray> rgb5d = argbToRgb5d(argbCrop);
+        final long[] dims5d = rgb5d.dimensionsAsLongArray();
+        final long[] spatialDims = Arrays.copyOf(dims5d, 3);
+        final int[] blockSize = defaultBlockSize(spatialDims);
+        final int[][] downsamplings = defaultDownsamplings(spatialDims);
+        final Compression compression = new GzipCompression();
+
+        final MultiResolutionLevelInfo[] pyramid;
+        try (final N5Writer writer = URITools.instantiateN5Writer(
+                StorageFormat.ZARR,
+                URITools.toURI(containerPath.toString()))) {
+
+            pyramid = N5ApiTools.setupMultiResolutionPyramid(
+                    writer,
+                    level -> Integer.toString(level),
+                    DataType.UINT8,
+                    dims5d,
+                    compression,
+                    blockSize,
+                    downsamplings
+            );
+
+            final DatasetAttributes s0Attributes = writer.getDatasetAttributes(pyramid[0].dataset);
+            N5Utils.saveBlock(rgb5d, writer, pyramid[0].dataset, s0Attributes);
+
+            writeDownsampledLevels(writer, pyramid);
+            writeOmeNgffMetadata(writer, pyramid, containerPath.getFileName().toString());
+        }
+
+        System.out.println("Exported multiscale OME-Zarr crop to " + containerPath);
+    }
+
+    private static void writeDownsampledLevels(
+            final N5Writer writer,
+            final MultiResolutionLevelInfo[] pyramid
+    ) {
+        if (pyramid.length <= 1)
+            return;
+
+        for (int level = 1; level < pyramid.length; level++) {
+            final MultiResolutionLevelInfo current = pyramid[level];
+            final MultiResolutionLevelInfo previous = pyramid[level - 1];
+
+            final int[] blockSize3d = new int[] {
+                    current.blockSize[0],
+                    current.blockSize[1],
+                    current.blockSize[2]
+            };
+
+            final long[] levelDims3d = new long[] {
+                    current.dimensions[0],
+                    current.dimensions[1],
+                    current.dimensions[2]
+            };
+
+            final List<long[][]> grid = N5ApiTools.assembleJobs(levelDims3d, blockSize3d);
+
+            for (int channel = 0; channel < current.dimensions[3]; channel++) {
+                for (long[][] gridBlock : grid) {
+                    N5ApiTools.writeDownsampledBlock5dOMEZARR(
+                            writer,
+                            current,
+                            previous,
+                            gridBlock,
+                            channel,
+                            0L
+                    );
+                }
+            }
+        }
+    }
+
+    private static void writeOmeNgffMetadata(
+            final N5Writer writer,
+            final MultiResolutionLevelInfo[] pyramid,
+            final String datasetName
+    ) throws IOException {
+        final Function<Integer, AffineTransform3D> levelToTransform =
+                level -> MipmapTransforms.getMipmapTransformDefault(pyramid[level].absoluteDownsamplingDouble());
+
+        final double[] resolution = new double[] {1.0, 1.0, 1.0};
+
+        final OmeNgffMultiScaleMetadata[] metadata = OMEZarrAttibutes.createOMEZarrMetadata(
+                5,
+                datasetName,
+                resolution,
+                UNIT_PIXEL,
+                pyramid.length,
+                level -> "/" + level,
+                levelToTransform
+        );
+
+        writer.setAttribute("/", "multiscales", metadata);
+    }
+
+    private static ArrayImg<UnsignedByteType, ByteArray> argbToRgb5d(
+            final RandomAccessibleInterval<ARGBType> argb
+    ) {
+        final int nd = argb.numDimensions();
+        final long sizeX = argb.dimension(0);
+        final long sizeY = argb.dimension(1);
+        final long sizeZ = nd > 2 ? argb.dimension(2) : 1L;
+
+        final ArrayImg<UnsignedByteType, ByteArray> out = ArrayImgs.unsignedBytes(sizeX, sizeY, sizeZ, 3, 1);
+        final Cursor<ARGBType> inCursor = Views.zeroMin(argb).localizingCursor();
+        final RandomAccess<UnsignedByteType> outAccess = out.randomAccess();
+
+        final long[] inputPos = new long[Math.max(3, nd)];
+        final long[] target = new long[] {0, 0, 0, 0, 0};
+
+        while (inCursor.hasNext()) {
+            final ARGBType pixel = inCursor.next();
+            inCursor.localize(inputPos);
+
+            target[0] = inputPos[0];
+            target[1] = inputPos[1];
+            target[2] = nd > 2 ? inputPos[2] : 0L;
+            target[4] = 0L;
+
+            final int value = pixel.get();
+            final int r = (value >> 16) & 0xff;
+            final int g = (value >> 8) & 0xff;
+            final int b = value & 0xff;
+
+            target[3] = 0;
+            outAccess.setPosition(target);
+            outAccess.get().set(r);
+
+            target[3] = 1;
+            outAccess.setPosition(target);
+            outAccess.get().set(g);
+
+            target[3] = 2;
+            outAccess.setPosition(target);
+            outAccess.get().set(b);
+        }
+
+        return out;
+    }
+
+    private static int[] defaultBlockSize(final long[] spatialDims) {
+        return new int[] {
+                blockSizeFor(spatialDims[0]),
+                blockSizeFor(spatialDims[1]),
+                blockSizeFor(spatialDims[2]),
+                3,
+                1
+        };
+    }
+
+    private static int blockSizeFor(final long dim) {
+        return (int)Math.max(1, Math.min(dim, 64));
+    }
+
+    private static int[][] defaultDownsamplings(final long[] spatialDims) {
+        final List<int[]> levels = new ArrayList<>();
+        levels.add(new int[] {1, 1, 1, 1, 1});
+
+        int[] current = levels.get(0);
+        for (int level = 1; level <= MAX_DOWNSAMPLING_LEVELS; level++) {
+            final int[] next = current.clone();
+            boolean changed = false;
+
+            for (int d = 0; d < 3; d++) {
+                if (spatialDims[d] / next[d] >= 2) {
+                    next[d] *= 2;
+                    changed = true;
+                }
+            }
+
+            if (!changed) {
+                break;
+            }
+
+            levels.add(next);
+            current = next;
+        }
+
+        return levels.toArray(new int[0][]);
+    }
+
+    private static void deleteRecursivelyIfExists(final Path path) throws IOException {
+        if (!Files.exists(path))
+            return;
+
+        try (Stream<Path> walk = Files.walk(path)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
     }
 
     /** Simple distinct palette */
