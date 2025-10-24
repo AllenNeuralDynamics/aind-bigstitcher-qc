@@ -324,4 +324,10 @@ unzip awscliv2.zip
 
 pip install "numpy>=1.24" "rectpack>=0.2.2" "zarr>=2.16" 
 
+git clone https://github.com/AllenNeuralDynamics/aind-bigstitcher-qc.git
+cd aind-bigstitcher-qc
+git checkout dev
+cd code/bigstitcher-qc
+mvn clean package
+
 log "All done!"
