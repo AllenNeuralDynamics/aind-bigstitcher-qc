@@ -1,0 +1,49 @@
+{
+	"version": 1,
+	"parameters": [
+		{
+			"id": "3Zj5f6y7Kd22IKt8",
+			"name": "xml",
+			"type": "text",
+			"value_type": "string",
+			"required": true
+		},
+		{
+			"id": "ykzXghh3p3kFlt3Q",
+			"name": "anisotropy-factor",
+			"type": "text",
+			"value_type": "number",
+			"default_value": "1.377"
+		},
+		{
+			"id": "fWR4w08BBWZLQTM6",
+			"name": "dowsampling-factor",
+			"type": "text",
+			"value_type": "integer",
+			"default_value": "8"
+		},
+		{
+			"id": "0nQNdMMFPojphmK1",
+			"name": "interpolation",
+			"type": "text",
+			"value_type": "integer",
+			"default_value": "1",
+			"minimum": 0,
+			"maximum": 1
+		},
+		{
+			"id": "dwuz0zg6LvzHs84h",
+			"name": "zarr-multiscale-levels",
+			"type": "text",
+			"value_type": "integer",
+			"default_value": "4"
+		},
+		{
+			"id": "qZ9VEWx2UEbfYEcv",
+			"name": "display-max",
+			"type": "text",
+			"value_type": "number",
+			"default_value": "100"
+		}
+	]
+}
