@@ -470,7 +470,11 @@ public class CreateOverlays {
         }
 
         final Interval outInterval = FusionTools.getFusedZeroMinInterval(cropBB);
-        return new OverlayCompositor(outInterval, transformedSources, palette, colorIndexForSource);
+
+        final long[] cropMin = new long[3];
+        cropBB.min(cropMin);
+
+        return new OverlayCompositor(outInterval, transformedSources, palette, colorIndexForSource, cropMin);
     }
 
     /** Map baseColor (ARGB, with 8-bit RGB) to a color whose RGB channels equal baseColor*level/255 and alpha=255. */
@@ -535,7 +539,7 @@ public class CreateOverlays {
 
                 writeS0Blocks(overlay, writer, pyramid[0], executor);
                 writeDownsampledLevels(writer, pyramid, executor);
-                writeOmeNgffMetadata(writer, pyramid, containerPath.getFileName().toString());
+                writeOmeNgffMetadata(writer, pyramid, containerPath.getFileName().toString(), overlay.worldMin3d());
             }
         } finally {
             shutdownExecutor(executor);
@@ -637,10 +641,18 @@ public class CreateOverlays {
     private static void writeOmeNgffMetadata(
             final N5Writer writer,
             final MultiResolutionLevelInfo[] pyramid,
-            final String datasetName
+            final String datasetName,
+            final double[] worldMin3d
     ) throws IOException {
         final Function<Integer, AffineTransform3D> levelToTransform =
-                level -> MipmapTransforms.getMipmapTransformDefault(pyramid[level].absoluteDownsamplingDouble());
+                level -> {
+                    final double[] downsampling = pyramid[level].absoluteDownsamplingDouble();
+                    final AffineTransform3D transform = MipmapTransforms.getMipmapTransformDefault(downsampling);
+                    final double[] levelTranslation = computeLevelTranslation(worldMin3d, downsampling);
+                    for (int axis = 0; axis < 3; axis++)
+                        transform.set(levelTranslation[axis], axis, 3);
+                    return transform;
+                };
 
         final double[] resolution = new double[] {1.0, 1.0, 1.0};
 
@@ -655,6 +667,19 @@ public class CreateOverlays {
         );
 
         writer.setAttribute("/", "multiscales", metadata);
+    }
+
+    private static double[] computeLevelTranslation(final double[] worldMin3d, final double[] absoluteDownsampling) {
+        final double[] translation = new double[3];
+        for (int axis = 0; axis < 3; axis++) {
+            final double base = worldMin3d != null && axis < worldMin3d.length ? worldMin3d[axis] : 0.0;
+            final double downsampling = absoluteDownsampling != null && axis < absoluteDownsampling.length
+                    ? absoluteDownsampling[axis]
+                    : 1.0;
+            final double shift = 0.5 * Math.max(0.0, downsampling - 1.0);
+            translation[axis] = base + shift;
+        }
+        return translation;
     }
 
     private static void waitForFutures(final List<Future<?>> futures) {
@@ -716,22 +741,33 @@ public class CreateOverlays {
         private final int[] palette;
         private final int[] colorIndexForSource;
         private final long[] spatialDims;
+        private final double[] worldMin3d;
 
         OverlayCompositor(
                 final Interval interval,
                 final List<RandomAccessibleInterval<FloatType>> sources,
                 final int[] palette,
-                final int[] colorIndexForSource
+                final int[] colorIndexForSource,
+                final long[] cropMin
         ) {
             this.sources = new ArrayList<>(sources);
             this.palette = palette;
             this.colorIndexForSource = colorIndexForSource.clone();
             this.spatialDims = new long[3];
             interval.dimensions(this.spatialDims);
+            this.worldMin3d = new double[] {
+                    cropMin != null && cropMin.length > 0 ? cropMin[0] : 0.0,
+                    cropMin != null && cropMin.length > 1 ? cropMin[1] : 0.0,
+                    cropMin != null && cropMin.length > 2 ? cropMin[2] : 0.0
+            };
         }
 
         long[] spatialDimensions() {
             return spatialDims.clone();
+        }
+
+        double[] worldMin3d() {
+            return worldMin3d.clone();
         }
 
         void renderBlock(final long[] blockMin, final ArrayImg<UnsignedByteType, ByteArray> target) {
