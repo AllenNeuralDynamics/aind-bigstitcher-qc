@@ -322,4 +322,6 @@ curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip
 unzip awscliv2.zip
 ./aws/install
 
+pip install "numpy>=1.24" "rectpack>=0.2.2" "zarr>=2.16" 
+
 log "All done!"

@@ -1,3 +1,0 @@
-numpy>=1.24
-rectpack>=0.2.2
-zarr>=2.16
