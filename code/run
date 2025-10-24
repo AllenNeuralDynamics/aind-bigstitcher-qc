@@ -2,12 +2,12 @@
 
 set -ex
 
-java -jar \
+java -Xms64g -Xmx64g -Djava.awt.headless=true -jar \
 /aind-bigstitcher-qc/code/bigstitcher-qc/target/bigstitcher-qc-1.0.0-SNAPSHOT.jar \
 $1 \
 /results/out \
 --anisotropy $2 \
 --downsampling $3 \
---interpolation $4
---max-downsampling-levels $5
+--interpolation $4 \
+--max-downsampling-levels $5 \
 --display-max $6
