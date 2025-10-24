@@ -61,24 +61,138 @@ import net.preibisch.mvrecon.process.n5api.N5ApiTools;
 import net.preibisch.mvrecon.process.n5api.N5ApiTools.MultiResolutionLevelInfo;
 import net.preibisch.mvrecon.fiji.spimdata.imgloaders.OMEZarrAttibutes;
 import util.URITools;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
+import picocli.CommandLine.ParseResult;
 
 public class TestColorOverlayOverlaps {
 
-    // Display scaling: map FloatType intensities to 0..255 before tinting.
-    static final float DISPLAY_MAX = 100f;
+    // Display scaling defaults: map FloatType intensities to 0..255 before tinting.
+    private static final float DEFAULT_DISPLAY_MAX = 100f;
+    // Use mutable value so CLI can override defaults.
+    private static float displayMax = DEFAULT_DISPLAY_MAX;
 
     // Choose interpolation: 1=linear, 0=nearest
-    static final int INTERPOLATION = 1;
+    private static final int DEFAULT_INTERPOLATION = 1;
+    private static int interpolation = DEFAULT_INTERPOLATION;
 
-    private static final Path OME_ZARR_ROOT = Paths.get("/results", "ome-zarr_4x");
+    private static final double DEFAULT_ANISOTROPY = 1.0;
+    private static final double DEFAULT_DOWNSAMPLING = 8.0;
+    private static final int DEFAULT_MAX_DOWNSAMPLING_LEVELS = 7;
+    private static Path omeZarrRoot;
+    private static Integer userDefinedBlockSize;
     private static final String UNIT_PIXEL = "micrometer";
-    private static final int MAX_DOWNSAMPLING_LEVELS = 5;
+    private static int maxDownsamplingLevels = DEFAULT_MAX_DOWNSAMPLING_LEVELS;
+
+    @Command(
+            name = "TestColorOverlayOverlaps",
+            mixinStandardHelpOptions = true,
+            description = "Creates ARGB overlap crops and writes them as multiscale OME-Zarr datasets."
+    )
+    private static final class CliOptions {
+        @Parameters(index = "0", paramLabel = "XML", description = "Path to the BigStitcher XML dataset.")
+        Path xmlPath;
+
+        @Parameters(index = "1", paramLabel = "OUTPUT", description = "Root directory where OME-Zarr crops will be written.")
+        Path outputRoot;
+
+        @Option(names = "--block-size", paramLabel = "INT", description = "Override cubic block size in voxels.")
+        Integer blockSizeOverride;
+
+        @Option(
+                names = "--anisotropy",
+                paramLabel = "FLOAT",
+                defaultValue = "" + DEFAULT_ANISOTROPY,
+                description = "Anisotropy factor applied before fusion (default: ${DEFAULT-VALUE})."
+        )
+        double anisotropy;
+
+        @Option(
+                names = "--downsampling",
+                paramLabel = "FLOAT",
+                defaultValue = "" + DEFAULT_DOWNSAMPLING,
+                description = "Downsampling factor applied before fusion (default: ${DEFAULT-VALUE})."
+        )
+        double downsampling;
+
+        @Option(
+                names = "--display-max",
+                paramLabel = "FLOAT",
+                defaultValue = "" + DEFAULT_DISPLAY_MAX,
+                description = "Intensity mapped to 255 in the ARGB overlay (default: ${DEFAULT-VALUE})."
+        )
+        double displayMax;
+
+        @Option(
+                names = "--max-downsampling-levels",
+                paramLabel = "INT",
+                defaultValue = "" + DEFAULT_MAX_DOWNSAMPLING_LEVELS,
+                description = "Maximum multi-scale pyramid levels to generate (default: ${DEFAULT-VALUE})."
+        )
+        int maxDownsamplingLevels;
+
+        @Option(
+                names = "--interpolation",
+                paramLabel = "INT",
+                defaultValue = "" + DEFAULT_INTERPOLATION,
+                description = "Interpolation mode: 0=nearest, 1=linear (default: ${DEFAULT-VALUE})."
+        )
+        int interpolation;
+    }
 
     public static void main(String[] args) throws Exception {
+        final CliOptions options = new CliOptions();
+        final CommandLine commandLine = new CommandLine(options);
+
+        final ParseResult parseResult;
+        try {
+            parseResult = commandLine.parseArgs(args);
+        } catch (CommandLine.ParameterException parameterException) {
+            commandLine.getErr().println(parameterException.getMessage());
+            commandLine.usage(commandLine.getErr());
+            return;
+        }
+
+        if (CommandLine.printHelpIfRequested(parseResult))
+            return;
+
+        if (options.blockSizeOverride != null && options.blockSizeOverride <= 0) {
+            commandLine.getErr().println("Block size must be a positive integer.");
+            commandLine.usage(commandLine.getErr());
+            return;
+        }
+
+        if (options.displayMax <= 0) {
+            commandLine.getErr().println("Display max must be greater than zero.");
+            commandLine.usage(commandLine.getErr());
+            return;
+        }
+
+        if (options.maxDownsamplingLevels < 0) {
+            commandLine.getErr().println("Max downsampling levels must be zero or a positive integer.");
+            commandLine.usage(commandLine.getErr());
+            return;
+        }
+
+        if (options.interpolation < 0 || options.interpolation > 1) {
+            commandLine.getErr().println("Interpolation must be 0 (nearest) or 1 (linear).");
+            commandLine.usage(commandLine.getErr());
+            return;
+        }
+
+        omeZarrRoot = options.outputRoot.toAbsolutePath().normalize();
+        userDefinedBlockSize = options.blockSizeOverride;
+        displayMax = (float) options.displayMax;
+        maxDownsamplingLevels = options.maxDownsamplingLevels;
+        interpolation = options.interpolation;
+
         final Logger rootLogger = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
         rootLogger.setLevel(Level.INFO);
 
-        final String xml = "/root/capsule/data/bigstitcher_affine.split.xml";
+        final Path xmlPath = options.xmlPath.toAbsolutePath().normalize();
+        final String xml = xmlPath.toString();
         final SpimData2 spimData = new XmlIoSpimData2().load(xml);
         System.out.println("Loaded: " + xml);
 
@@ -92,10 +206,9 @@ public class TestColorOverlayOverlaps {
         }
         System.out.println("Processing " + views.size() + " views.");
 
-        // FIXME: is this correct??.
         // To not scale, use Double.NaN for both.
-        final double anisotropy = 1.337; // or Double.NaN
-        final double downsampling = 4;  // or Double.NaN
+        final double anisotropy = options.anisotropy; // or Double.NaN
+        final double downsampling = options.downsampling;  // or Double.NaN
         final Map<ViewId, AffineTransform3D> regs = TransformVirtual.adjustAllTransforms(
                 views,
                 spimData.getViewRegistrations().getViewRegistrations(),
@@ -137,7 +250,7 @@ public class TestColorOverlayOverlaps {
                         regs,
                         views,
                         overlap,
-                        INTERPOLATION,
+                        interpolation,
                         true
                 );
 
@@ -177,7 +290,7 @@ public class TestColorOverlayOverlaps {
                         regs,
                         views,
                         overlap,
-                        INTERPOLATION,
+                        interpolation,
                         false
                 );
 
@@ -386,7 +499,10 @@ public class TestColorOverlayOverlaps {
             final OverlayCompositor overlay,
             final String name
     ) throws IOException {
-        final Path outputFolder = OME_ZARR_ROOT.resolve(name).normalize();
+        if (omeZarrRoot == null)
+            throw new IllegalStateException("OME-Zarr output root is not configured");
+
+        final Path outputFolder = omeZarrRoot.resolve(name).normalize();
         final Path containerPath = outputFolder.getParent() == null
                 ? Paths.get(outputFolder.toString() + ".ome.zarr")
                 : outputFolder.getParent().resolve(outputFolder.getFileName().toString() + ".ome.zarr");
@@ -654,7 +770,7 @@ public class TestColorOverlayOverlaps {
                             final float val = ra.get().getRealFloat();
                             if (val <= 0)
                                 continue;
-                            final int level = clampTo8bit((val / DISPLAY_MAX) * 255f);
+                            final int level = clampTo8bit((val / displayMax) * 255f);
                             if (level == 0)
                                 continue;
                             final int srcColor = tint(paletteLocal[colorIndex[s]], level);
@@ -675,10 +791,11 @@ public class TestColorOverlayOverlaps {
     }
 
     private static int[] defaultBlockSize(final long[] spatialDims) {
+        final int override = userDefinedBlockSize != null ? userDefinedBlockSize : -1;
         return new int[] {
-                blockSizeFor(spatialDims[0]),
-                blockSizeFor(spatialDims[1]),
-                blockSizeFor(spatialDims[2]),
+                override > 0 ? override : blockSizeFor(spatialDims[0]),
+                override > 0 ? override : blockSizeFor(spatialDims[1]),
+                override > 0 ? override : blockSizeFor(spatialDims[2]),
                 3,
                 1
         };
@@ -693,7 +810,7 @@ public class TestColorOverlayOverlaps {
         levels.add(new int[] {1, 1, 1, 1, 1});
 
         int[] current = levels.get(0);
-        for (int level = 1; level <= MAX_DOWNSAMPLING_LEVELS; level++) {
+        for (int level = 1; level <= maxDownsamplingLevels; level++) {
             final int[] next = current.clone();
             boolean changed = false;
 
