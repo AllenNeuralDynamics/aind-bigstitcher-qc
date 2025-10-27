@@ -59,7 +59,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>org.aind.bigstitcher.qc.CreateOverlays</mainClass>
+                                    <mainClass>org.aind.bigstitcher.qc.FuseCompositeOverlaps</mainClass>
                                 </transformer>
                             </transformers>
                             <!-- Strip signatures from shaded JAR to avoid 'Invalid signature file digest' at runtime -->
@@ -73,6 +73,33 @@
                                     </excludes>
                                 </filter>
                             </filters>
+                        </configuration>
+                    </execution>
+                    <!-- Additional shaded JAR for FuseComposite entry point -->
+                    <execution>
+                        <id>shade-fuse-composite</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>org.aind.bigstitcher.qc.FuseCompositeVolume</mainClass>
+                                </transformer>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>fuse-composite</shadedClassifierName>
                         </configuration>
                     </execution>
                 </executions>
