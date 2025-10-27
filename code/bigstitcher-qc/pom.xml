@@ -59,7 +59,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>org.aind.bigstitcher.qc.CreateOverlays</mainClass>
+                                    <mainClass>org.aind.bigstitcher.qc.FuseCompositeOverlaps</mainClass>
                                 </transformer>
                             </transformers>
                             <!-- Strip signatures from shaded JAR to avoid 'Invalid signature file digest' at runtime -->
@@ -85,7 +85,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>org.aind.bigstitcher.qc.FuseComposite</mainClass>
+                                    <mainClass>org.aind.bigstitcher.qc.FuseCompositeVolume</mainClass>
                                 </transformer>
                             </transformers>
                             <filters>
