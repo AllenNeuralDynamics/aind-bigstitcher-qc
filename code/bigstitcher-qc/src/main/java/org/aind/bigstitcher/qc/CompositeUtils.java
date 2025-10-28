@@ -1,6 +1,7 @@
 package org.aind.bigstitcher.qc;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -144,24 +145,36 @@ final class CompositeUtils {
         return new CompositeBlockRenderer(outInterval, transformedSources, palette, colorIndexForSource, cropMin, displayMax, boundsArray);
     }
 
-    static Path exportCompositeAsOmeZarr(
+    static URI exportCompositeAsOmeZarr(
             final CompositeBlockRenderer overlay,
-            final Path outputRoot,
-            final String relativeName,
+            final String containerLocation,
+            final String datasetLabel,
             final Integer userDefinedBlockSize,
             final int maxDownsamplingLevels,
             final String unit
     ) throws IOException {
-        if (outputRoot == null)
-            throw new IllegalStateException("OME-Zarr output root is not configured");
+        if (containerLocation == null || containerLocation.isEmpty())
+            throw new IllegalStateException("OME-Zarr output location is not configured");
 
-        final Path outputFolder = outputRoot.resolve(relativeName).normalize();
-        final Path containerPath = outputFolder.getParent() == null
-                ? Paths.get(outputFolder.toString() + ".ome.zarr")
-                : outputFolder.getParent().resolve(outputFolder.getFileName().toString() + ".ome.zarr");
+        final URI containerUri = URITools.toURI(containerLocation);
+        final boolean isLocal = URITools.isFile(containerUri);
+        final Path localContainerPath = isLocal ? Paths.get(URITools.fromURI(containerUri)).toAbsolutePath().normalize() : null;
 
-        Files.createDirectories(containerPath.getParent());
-        Utils.deleteRecursivelyIfExists(containerPath);
+        if (isLocal && localContainerPath != null) {
+            final Path parent = localContainerPath.getParent();
+            if (parent != null)
+                Files.createDirectories(parent);
+            Utils.deleteRecursivelyIfExists(localContainerPath);
+        }
+
+        final String datasetDisplayName;
+        if (datasetLabel != null && !datasetLabel.isEmpty()) {
+            datasetDisplayName = Utils.lastPathSegmentOrDefault(datasetLabel, datasetLabel);
+        } else if (isLocal && localContainerPath != null) {
+            datasetDisplayName = localContainerPath.getFileName().toString();
+        } else {
+            datasetDisplayName = Utils.lastPathSegmentOrDefault(containerUri.getPath(), "dataset");
+        }
 
         final long[] spatialDims = overlay.spatialDimensions();
         final long[] dims5d = new long[] { spatialDims[0], spatialDims[1], spatialDims[2], 3, 1 };
@@ -173,7 +186,7 @@ final class CompositeUtils {
         try {
             try (final N5Writer writer = URITools.instantiateN5Writer(
                     StorageFormat.ZARR,
-                    URITools.toURI(containerPath.toString()))) {
+                    containerUri)) {
 
                 final MultiResolutionLevelInfo[] pyramid = N5ApiTools.setupMultiResolutionPyramid(
                         writer,
@@ -190,7 +203,7 @@ final class CompositeUtils {
                 ZarrUtils.writeOmeNgffMetadata(
                         writer,
                         pyramid,
-                        containerPath.getFileName().toString(),
+                        datasetDisplayName,
                         overlay.worldMin3d(),
                         unit
                 );
@@ -199,7 +212,7 @@ final class CompositeUtils {
             ZarrUtils.shutdownExecutor(executor);
         }
 
-        return containerPath;
+        return containerUri;
     }
 
     interface BlockRenderer {

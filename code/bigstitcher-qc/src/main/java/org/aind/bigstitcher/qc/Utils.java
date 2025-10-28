@@ -5,8 +5,10 @@ import bdv.cache.CacheControl;
 import bdv.img.cache.VolatileGlobalCellCache;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -25,6 +27,7 @@ import net.imglib2.realtransform.AffineTransform3D;
 import net.imglib2.util.Intervals;
 import net.imglib2.type.numeric.real.FloatType;
 import net.preibisch.mvrecon.fiji.spimdata.SpimData2;
+import util.URITools;
 
 final class Utils {
 
@@ -45,6 +48,42 @@ final class Utils {
             });
         } catch (UncheckedIOException e) {
             throw e.getCause();
+        }   
+    }
+
+    /**
+     * Return the last path segment after normalizing separators. If the input is
+     * null or cannot yield a non-empty segment, returns defaultValue.
+     * Examples:
+     * - "s3://bucket/foo/bar.ome.zarr" -> "bar.ome.zarr"
+     * - "/data/out/vol.ome.zarr/" -> "vol.ome.zarr"
+     * - "name-only" -> "name-only"
+     */
+    static String lastPathSegmentOrDefault(final String pathLike, final String defaultValue) {
+        if (pathLike == null)
+            return defaultValue;
+        String s = pathLike.replace('\\', '/');
+        if (s.isEmpty())
+            return defaultValue;
+        if (s.endsWith("/"))
+            s = s.substring(0, s.length() - 1);
+        final int idx = s.lastIndexOf('/');
+        final String segment = idx >= 0 ? s.substring(idx + 1) : s;
+        return (segment == null || segment.isEmpty()) ? defaultValue : segment;
+    }
+
+    /**
+     * Configure the S3 region for the N5 S3 writer from common environment variables.
+     * Looks up AWS_REGION first, then AWS_DEFAULT_REGION. If a value is present,
+     * assigns it to URITools.s3Region so N5Factory uses the correct region.
+     */
+    static void configureS3RegionFromEnv() {
+        try {
+            String r = System.getenv("AWS_REGION");
+            if (r == null || r.isEmpty()) r = System.getenv("AWS_DEFAULT_REGION");
+            if (r != null && !r.isEmpty()) URITools.s3Region = r;
+        } catch (Exception ignored) {
+            // ignore
         }
     }
 
@@ -168,4 +207,17 @@ final class Utils {
             return new long[] { 1, 1, 1, 0, 0, 0 };
         }
     }
+
+    static String normalizeOutputRoot(final String raw) {
+        if (raw == null || raw.isEmpty())
+            return raw;
+
+        final URI uri = URITools.toURI(raw);
+        if (URITools.isFile(uri)) {
+            final Path path = Paths.get(URITools.fromURI(uri)).toAbsolutePath().normalize();
+            return path.toString();
+        }
+        return uri.toString();
+    }
+
 }

@@ -1,6 +1,7 @@
 package org.aind.bigstitcher.qc;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
@@ -37,7 +38,7 @@ public class FuseCompositeVolume {
     private static final int DEFAULT_INTERPOLATION = 1;
     private static final String UNIT_PIXEL = "micrometer";
 
-    private static Path omeZarrRoot;
+    private static String omeZarrRoot;
     private static Integer userDefinedBlockSize;
     private static int maxDownsamplingLevels = DEFAULT_MAX_DOWNSAMPLING_LEVELS;
     private static int interpolation = DEFAULT_INTERPOLATION;
@@ -51,8 +52,8 @@ public class FuseCompositeVolume {
         @Parameters(index = "0", paramLabel = "XML", description = "Path to the BigStitcher XML dataset.")
         Path xmlPath;
 
-        @Parameters(index = "1", paramLabel = "OUTPUT", description = "Root directory where the OME-Zarr volume will be written.")
-        Path outputRoot;
+        @Parameters(index = "1", paramLabel = "OUTPUT", description = "Root directory or URI where the OME-Zarr volume will be written.")
+        String outputRoot;
 
         @Option(names = "--block-size", paramLabel = "INT", description = "Override cubic block size in voxels.")
         Integer blockSizeOverride;
@@ -115,6 +116,9 @@ public class FuseCompositeVolume {
     }
 
     public static void main(final String[] args) throws Exception {
+        // Preflight: propagate AWS region to N5 S3 writer if provided
+        Utils.configureS3RegionFromEnv();
+
         final CliOptions options = new CliOptions();
         final CommandLine commandLine = new CommandLine(options);
 
@@ -163,7 +167,8 @@ public class FuseCompositeVolume {
             return;
         }
 
-        omeZarrRoot = options.outputRoot.toAbsolutePath().normalize();
+        omeZarrRoot = Utils.normalizeOutputRoot(options.outputRoot);
+        System.out.println("OME-Zarr output root: " + omeZarrRoot);
         userDefinedBlockSize = options.blockSizeOverride;
         displayMax = (float) options.displayMax;
         maxDownsamplingLevels = options.maxDownsamplingLevels;
@@ -263,7 +268,7 @@ public class FuseCompositeVolume {
             final CompositeUtils.CompositeBlockRenderer overlay,
             final String datasetName
     ) throws IOException {
-        final Path containerPath = CompositeUtils.exportCompositeAsOmeZarr(
+        final URI containerUri = CompositeUtils.exportCompositeAsOmeZarr(
                 overlay,
                 omeZarrRoot,
                 datasetName,
@@ -272,7 +277,7 @@ public class FuseCompositeVolume {
                 UNIT_PIXEL
         );
 
-        System.out.println("Exported multiscale OME-Zarr volume to " + containerPath);
+        System.out.println("Exported multiscale OME-Zarr volume to " + containerUri);
     }
 
 }
