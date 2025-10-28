@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.stream.IntStream;
 import mpicbg.spim.data.generic.sequence.BasicViewDescription;
 import mpicbg.spim.data.sequence.ViewId;
 import mpicbg.spim.data.sequence.ViewSetup;
@@ -85,6 +84,7 @@ final class CompositeUtils {
 
         final List<RandomAccessibleInterval<FloatType>> transformedSources = new ArrayList<>(overlapping.size());
         final List<Integer> sourceIds = new ArrayList<>(overlapping.size());
+        final List<long[]> sourceBounds = new ArrayList<>(overlapping.size()); // [minX,minY,minZ,maxX,maxY,maxZ] in zero-min overlay coords
         final ColorMode effectiveMode = colorMode == null ? ColorMode.ILLUMINATION : colorMode;
 
         for (final ViewId vid : overlapping) {
@@ -108,6 +108,9 @@ final class CompositeUtils {
 
             transformed = Views.zeroMin(transformed);
             transformedSources.add(transformed);
+
+            // Compute this source's bounds within the overlay (zero-min) coordinates.
+            sourceBounds.add(Utils.computeSourceBounds(input, model, cropBB));
 
             final BasicViewDescription<ViewSetup> vd = vds.get(vid);
             final int sourceId = effectiveMode == ColorMode.ILLUMINATION
@@ -137,7 +140,8 @@ final class CompositeUtils {
         final long[] cropMin = new long[3];
         cropBB.min(cropMin);
 
-        return new CompositeBlockRenderer(outInterval, transformedSources, palette, colorIndexForSource, cropMin, displayMax);
+        final long[][] boundsArray = sourceBounds.toArray(new long[0][]);
+        return new CompositeBlockRenderer(outInterval, transformedSources, palette, colorIndexForSource, cropMin, displayMax, boundsArray);
     }
 
     static Path exportCompositeAsOmeZarr(
@@ -211,6 +215,7 @@ final class CompositeUtils {
         private final long[] spatialDims;
         private final double[] worldMin3d;
         private final float displayMax;
+        private final long[][] sourceBounds; // [minX,minY,minZ,maxX,maxY,maxZ] per source in zero-min overlay coords
 
         CompositeBlockRenderer(
                 final Interval interval,
@@ -218,7 +223,8 @@ final class CompositeUtils {
                 final int[] palette,
                 final int[] colorIndexForSource,
                 final long[] cropMin,
-                final float displayMax
+                final float displayMax,
+                final long[][] sourceBounds
         ) {
             this.sources = new ArrayList<>(sources);
             this.palette = palette;
@@ -231,6 +237,7 @@ final class CompositeUtils {
                     cropMin != null && cropMin.length > 2 ? cropMin[2] : 0.0
             };
             this.displayMax = displayMax;
+            this.sourceBounds = sourceBounds;
         }
 
         @Override
@@ -262,21 +269,44 @@ final class CompositeUtils {
             final int[] colorIndex = this.colorIndexForSource;
             final float localDisplayMax = this.displayMax;
 
-            IntStream.range(0, sizeZ).parallel().forEach(localZ -> {
-                final long globalZ = blockMin[2] + localZ;
-                final long[] pos = new long[] { 0L, 0L, globalZ };
-                final ArrayList<RandomAccess<FloatType>> ras = new ArrayList<>(sourceCount);
-                for (int s = 0; s < sourceCount; s++)
-                    ras.add(localSources.get(s).randomAccess());
+            // Determine active sources for this block by intersecting per-source bounds with the block bounds.
+            final List<Integer> activeSources = Utils.collectActiveSourcesForBlock(
+                    blockMin,
+                    sizeX,
+                    sizeY,
+                    sizeZ,
+                    sourceBounds,
+                    sourceCount
+            );
 
-                for (int y = 0; y < sizeY; y++) {
-                    pos[1] = blockMin[1] + y;
-                    final int rowOffset = (localZ * sizeY + y) * sizeX;
-                    for (int x = 0; x < sizeX; x++) {
-                        pos[0] = blockMin[0] + x;
+            if (activeSources.isEmpty())
+                return;
+
+            final int activeCountFinal = activeSources.size();
+            // Convert to primitive indices once to avoid autoboxing in the inner loops.
+            final int[] activeIdx = new int[activeCountFinal];
+            for (int i = 0; i < activeCountFinal; i++)
+                activeIdx[i] = activeSources.get(i);
+
+            final ArrayList<RandomAccess<FloatType>> ras = new ArrayList<>(activeCountFinal);
+            for (int i = 0; i < activeCountFinal; i++)
+                ras.add(localSources.get(activeIdx[i]).randomAccess());
+
+            final long[] pos = new long[] { 0L, 0L, 0L };
+
+            for (int localZ = 0; localZ < sizeZ; localZ++) {
+                pos[2] = blockMin[2] + localZ;
+                final int sliceOffset = localZ * sizeY;
+
+                for (int localY = 0; localY < sizeY; localY++) {
+                    pos[1] = blockMin[1] + localY;
+                    final int rowOffset = (sliceOffset + localY) * sizeX;
+
+                    for (int localX = 0; localX < sizeX; localX++) {
+                        pos[0] = blockMin[0] + localX;
                         int argb = 0;
-                        for (int s = 0; s < sourceCount; s++) {
-                            final RandomAccess<FloatType> ra = ras.get(s);
+                        for (int i = 0; i < activeCountFinal; i++) {
+                            final RandomAccess<FloatType> ra = ras.get(i);
                             ra.setPosition(pos);
                             final float val = ra.get().getRealFloat();
                             if (val <= 0)
@@ -284,20 +314,20 @@ final class CompositeUtils {
                             final int level = clampTo8bit((val / localDisplayMax) * 255f);
                             if (level == 0)
                                 continue;
-                            final int srcColor = tint(paletteLocal[colorIndex[s]], level);
+                            final int srcColor = tint(paletteLocal[colorIndex[activeIdx[i]]], level);
                             argb = maxBlend(argb, srcColor);
                         }
 
                         if (argb == 0)
                             continue;
 
-                        final int baseIndex = rowOffset + x;
+                        final int baseIndex = rowOffset + localX;
                         data[channelOffsets[0] + baseIndex] = (byte) ((argb >> 16) & 0xff);
                         data[channelOffsets[1] + baseIndex] = (byte) ((argb >> 8) & 0xff);
                         data[channelOffsets[2] + baseIndex] = (byte) (argb & 0xff);
                     }
                 }
-            });
+            }
         }
     }
 
