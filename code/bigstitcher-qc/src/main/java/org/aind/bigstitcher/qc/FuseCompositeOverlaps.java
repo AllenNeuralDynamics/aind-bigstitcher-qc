@@ -3,6 +3,7 @@ package org.aind.bigstitcher.qc;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -350,9 +351,10 @@ public class FuseCompositeOverlaps {
             final CompositeUtils.CompositeBlockRenderer overlay,
             final String name
     ) throws IOException {
+        final String containerLocation = resolveContainerLocation(name);
         final URI containerUri = CompositeUtils.exportCompositeAsOmeZarr(
                 overlay,
-                omeZarrRoot,
+                containerLocation,
                 name,
                 userDefinedBlockSize,
                 maxDownsamplingLevels,
@@ -360,5 +362,20 @@ public class FuseCompositeOverlaps {
         );
 
         System.out.println("Exported multiscale OME-Zarr crop to " + containerUri);
+    }
+
+    private static String resolveContainerLocation(final String datasetName) {
+        final String relative = datasetName.endsWith(".ome.zarr") ? datasetName : datasetName + ".ome.zarr";
+
+        if (omeZarrRoot == null || omeZarrRoot.isEmpty()) {
+            return relative;
+        }
+
+        if (omeZarrRoot.contains("://")) {
+            final String separator = omeZarrRoot.endsWith("/") ? "" : "/";
+            return omeZarrRoot + separator + relative;
+        }
+
+        return Paths.get(omeZarrRoot).resolve(relative).toString();
     }
 }
