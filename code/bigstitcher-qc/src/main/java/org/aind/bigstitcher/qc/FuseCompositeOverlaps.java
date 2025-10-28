@@ -1,6 +1,7 @@
 package org.aind.bigstitcher.qc;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -43,7 +44,7 @@ public class FuseCompositeOverlaps {
     private static final double DEFAULT_ANISOTROPY = 1.0;
     private static final double DEFAULT_DOWNSAMPLING = 8.0;
     private static final int DEFAULT_MAX_DOWNSAMPLING_LEVELS = 7;
-    private static Path omeZarrRoot;
+    private static String omeZarrRoot;
     private static Integer userDefinedBlockSize;
     private static final String UNIT_PIXEL = "micrometer";
     private static int maxDownsamplingLevels = DEFAULT_MAX_DOWNSAMPLING_LEVELS;
@@ -57,8 +58,8 @@ public class FuseCompositeOverlaps {
         @Parameters(index = "0", paramLabel = "XML", description = "Path to the BigStitcher XML dataset.")
         Path xmlPath;
 
-        @Parameters(index = "1", paramLabel = "OUTPUT", description = "Root directory where OME-Zarr crops will be written.")
-        Path outputRoot;
+        @Parameters(index = "1", paramLabel = "OUTPUT", description = "Root directory or URI where OME-Zarr crops will be written.")
+        String outputRoot;
 
         @Option(names = "--block-size", paramLabel = "INT", description = "Override cubic block size in voxels.")
         Integer blockSizeOverride;
@@ -105,6 +106,9 @@ public class FuseCompositeOverlaps {
     }
 
     public static void main(String[] args) throws Exception {
+        // Preflight: propagate AWS region to N5 S3 writer if provided
+        Utils.configureS3RegionFromEnv();
+
         final CliOptions options = new CliOptions();
         final CommandLine commandLine = new CommandLine(options);
 
@@ -144,7 +148,7 @@ public class FuseCompositeOverlaps {
             return;
         }
 
-        omeZarrRoot = options.outputRoot.toAbsolutePath().normalize();
+        omeZarrRoot = Utils.normalizeOutputRoot(options.outputRoot);
         userDefinedBlockSize = options.blockSizeOverride;
         displayMax = (float) options.displayMax;
         maxDownsamplingLevels = options.maxDownsamplingLevels;
@@ -346,7 +350,7 @@ public class FuseCompositeOverlaps {
             final CompositeUtils.CompositeBlockRenderer overlay,
             final String name
     ) throws IOException {
-        final Path containerPath = CompositeUtils.exportCompositeAsOmeZarr(
+        final URI containerUri = CompositeUtils.exportCompositeAsOmeZarr(
                 overlay,
                 omeZarrRoot,
                 name,
@@ -355,6 +359,6 @@ public class FuseCompositeOverlaps {
                 UNIT_PIXEL
         );
 
-        System.out.println("Exported multiscale OME-Zarr crop to " + containerPath);
+        System.out.println("Exported multiscale OME-Zarr crop to " + containerUri);
     }
 }
