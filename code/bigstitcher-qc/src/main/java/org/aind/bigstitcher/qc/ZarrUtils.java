@@ -97,7 +97,11 @@ final class ZarrUtils {
                 final int sizeZ = (int)(blockMax[2] - blockMin[2] + 1);
 
                 final ArrayImg<UnsignedByteType, ByteArray> blockImg = ArrayImgs.unsignedBytes(sizeX, sizeY, sizeZ, 3, 1);
+                long t0 = System.currentTimeMillis();
                 overlay.renderBlock(blockMin, blockImg);
+                long t1 = System.currentTimeMillis();
+                // System.out.println(String.format("Rendered block at %d,%d,%d in %d ms",
+                //         blockMin[0], blockMin[1], blockMin[2], (t1 - t0)));
 
                 final long[] gridOffset = new long[] { blockCopy[2][0], blockCopy[2][1], blockCopy[2][2], 0, 0 };
                 N5Utils.saveNonEmptyBlock(blockImg, writer, levelInfo.dataset, gridOffset, new UnsignedByteType());
@@ -120,37 +124,14 @@ final class ZarrUtils {
             final MultiResolutionLevelInfo current = pyramid[level];
             final MultiResolutionLevelInfo previous = pyramid[level - 1];
 
-            final long[] dims3d = new long[] {
-                    current.dimensions[0],
-                    current.dimensions[1],
-                    current.dimensions[2]
-            };
-
-            final int[] blockSize3d = new int[] {
-                    current.blockSize[0],
-                    current.blockSize[1],
-                    current.blockSize[2]
-            };
-
-            final List<long[][]> grid = N5ApiTools.assembleJobs(dims3d, blockSize3d);
+            final List<long[][]> grid = N5ApiTools.assembleJobs(current.dimensions, current.blockSize);
             final List<Future<?>> futures = new ArrayList<>();
 
             for (long[][] gridBlock : grid) {
-                for (int channel = 0; channel < current.dimensions[3]; channel++) {
-                    final long[][] blockCopy = cloneGridBlock(gridBlock);
-                    final long channelIndex = channel;
-                    futures.add(executor.submit(() -> {
-                        N5ApiTools.writeDownsampledBlock5dOMEZARR(
-                                writer,
-                                current,
-                                previous,
-                                blockCopy,
-                                channelIndex,
-                                0L
-                        );
-                        return null;
-                    }));
-                }
+                final long[][] blockCopy = cloneGridBlock(gridBlock);
+                futures.add(executor.submit(() -> {
+                    N5ApiTools.writeDownsampledBlock(writer, current, previous, blockCopy);
+                }));
             }
 
             waitForFutures(futures);
@@ -223,7 +204,16 @@ final class ZarrUtils {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException("Interrupted while processing OME-Zarr blocks", e);
             } catch (java.util.concurrent.ExecutionException e) {
-                throw new RuntimeException("Failed to process OME-Zarr blocks", e.getCause());
+                // Log full stack traces for both the wrapper and the original cause
+                System.err.println("Executor task failed. Printing full stack trace:");
+                e.printStackTrace();
+                final Throwable cause = e.getCause();
+                if (cause != null) {
+                    System.err.println("Caused by:");
+                    cause.printStackTrace();
+                }
+                // Rethrow with the ExecutionException to preserve the full chain
+                throw new RuntimeException("Failed to process OME-Zarr blocks", e);
             }
         }
     }
