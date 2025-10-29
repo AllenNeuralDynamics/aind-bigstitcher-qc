@@ -34,8 +34,8 @@ import net.preibisch.mvrecon.process.n5api.N5ApiTools;
 import net.preibisch.mvrecon.process.n5api.N5ApiTools.MultiResolutionLevelInfo;
 import org.janelia.saalfeldlab.n5.Compression;
 import org.janelia.saalfeldlab.n5.DataType;
-import org.janelia.saalfeldlab.n5.GzipCompression;
 import org.janelia.saalfeldlab.n5.N5Writer;
+import org.janelia.saalfeldlab.n5.blosc.BloscCompression;
 import org.janelia.saalfeldlab.n5.universe.StorageFormat;
 import util.URITools;
 
@@ -180,7 +180,7 @@ final class CompositeUtils {
         final long[] dims5d = new long[] { spatialDims[0], spatialDims[1], spatialDims[2], 3, 1 };
         final int[] blockSize = ZarrUtils.defaultBlockSize(spatialDims, userDefinedBlockSize);
         final int[][] downsamplings = ZarrUtils.defaultDownsamplings(spatialDims, maxDownsamplingLevels);
-        final Compression compression = new GzipCompression(5);
+        final Compression compression = new BloscCompression("zstd", 1, 1, 0, 1);
 
         final ExecutorService executor = Executors.newFixedThreadPool(Threads.numThreads());
         try {
