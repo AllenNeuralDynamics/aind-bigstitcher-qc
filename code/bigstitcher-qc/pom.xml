@@ -1,109 +1,145 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.aind</groupId>
-    <artifactId>bigstitcher-qc</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-    <name>BigStitcher QC Tools</name>
-    <description>Standalone CLI utilities for BigStitcher quality control analysis.</description>
+<groupId>org.aind</groupId>
+<artifactId>bigstitcher-qc</artifactId>
+<version>1.0.0-SNAPSHOT</version>
+<name>BigStitcher QC Tools</name>
+<description>Standalone CLI utilities for BigStitcher quality control analysis.</description>
 
-    <properties>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
+<parent>
+<groupId>org.scijava</groupId>
+<artifactId>pom-scijava</artifactId>
+<version>42.0.0</version>
+<relativePath />
+</parent>
 
-    <repositories>
-        <repository>
-            <id>scijava.public</id>
-            <url>https://maven.scijava.org/content/groups/public</url>
-        </repository>
-    </repositories>
+<properties>
+<maven.compiler.source>1.8</maven.compiler.source>
+<maven.compiler.target>1.8</maven.compiler.target>
+<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+<enforcer.skip>true</enforcer.skip>
+</properties>
 
-    <dependencies>
-        <dependency>
-            <groupId>net.preibisch</groupId>
-            <artifactId>multiview-reconstruction</artifactId>
-            <version>8.0.0</version>
-        </dependency>
-        <!-- https://mvnrepository.com/artifact/info.picocli/picocli -->
-        <dependency>
-            <groupId>info.picocli</groupId>
-            <artifactId>picocli</artifactId>
-            <version>4.7.7</version>
-        </dependency>
-        <!-- https://mvnrepository.com/artifact/ch.qos.logback/logback-classic -->
-        <dependency>
-            <groupId>ch.qos.logback</groupId>
-            <artifactId>logback-classic</artifactId>
-            <version>1.2.6</version>
-            <scope>compile</scope>
-        </dependency>
-    </dependencies>
+<repositories>
+<repository>
+    <id>scijava.public</id>
+    <url>https://maven.scijava.org/content/groups/public</url>
+</repository>
+</repositories>
 
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.5.0</version>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>org.aind.bigstitcher.qc.FuseCompositeOverlaps</mainClass>
-                                </transformer>
-                            </transformers>
-                            <!-- Strip signatures from shaded JAR to avoid 'Invalid signature file digest' at runtime -->
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                        </configuration>
-                    </execution>
-                    <!-- Additional shaded JAR for FuseComposite entry point -->
-                    <execution>
-                        <id>shade-fuse-composite</id>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>org.aind.bigstitcher.qc.FuseCompositeVolume</mainClass>
-                                </transformer>
-                            </transformers>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                            <shadedArtifactAttached>true</shadedArtifactAttached>
-                            <shadedClassifierName>fuse-composite</shadedClassifierName>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
-    </build>
+<dependencies>
+<dependency>
+    <groupId>net.preibisch</groupId>
+    <artifactId>multiview-reconstruction</artifactId>
+    <version>8.0.0</version>
+</dependency>
+
+<!-- Ensure these codecs are on the classpath at runtime -->
+<dependency>
+    <groupId>org.janelia.saalfeldlab</groupId>
+    <artifactId>n5-blosc</artifactId>
+    <!-- version comes from BOM -->
+</dependency>
+<dependency>
+    <groupId>org.janelia</groupId>
+    <artifactId>n5-zstandard</artifactId>
+    <!-- version comes from BOM -->
+</dependency>
+
+<!-- CLI + logging -->
+<dependency>
+    <groupId>info.picocli</groupId>
+    <artifactId>picocli</artifactId>
+    <version>4.7.7</version>
+</dependency>
+<dependency>
+    <groupId>ch.qos.logback</groupId>
+    <artifactId>logback-classic</artifactId>
+    <version>1.2.6</version>
+    <scope>compile</scope>
+</dependency>
+</dependencies>
+
+<build>
+<plugins>
+    <plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-shade-plugin</artifactId>
+    <configuration>
+    <!-- Do not minimize for now to speed up packaging. -->
+    <transformers combine.children="append">
+        <transformer
+                implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+            <resource>META-INF/json/mpicbg.spim.data.generic.sequence.ImgLoaderIo</resource>
+        </transformer>
+        <transformer
+                implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+            <resource>META-INF/json/org.janelia.saalfeldlab.n5.Compression$CompressionType</resource>
+        </transformer>
+    </transformers>
+    <!--<minimizeJar>true</minimizeJar> -->
+    <filters>
+        <filter>
+            <artifact>*:*</artifact>
+            <excludes>
+                <exclude>META-INF/*.SF</exclude>
+                <exclude>META-INF/*.DSA</exclude>
+                <exclude>META-INF/*.RSA</exclude>
+            </excludes>
+        </filter>
+    </filters>
+    <!-- Additional configuration. -->
+    <relocations>
+        <relocation>
+            <pattern>org.apache.commons.compress</pattern>
+            <shadedPattern>org.janelia.saalfeldlab.org.apache.commons.compress</shadedPattern>
+        </relocation>
+        <!-- Protect newer gson version from the old one preloaded by spark -->
+        <relocation>
+            <pattern>com.google.gson</pattern>
+            <shadedPattern>org.janelia.saalfeldlab.com.google.gson</shadedPattern>
+        </relocation>
+    </relocations>
+    </configuration>
+
+    <executions>
+        <!-- Shaded JAR with main=FuseCompositeOverlaps -->
+        <execution>
+        <phase>package</phase>
+        <goals><goal>shade</goal></goals>
+        <configuration>
+            <createDependencyReducedPom>false</createDependencyReducedPom>
+            <transformers combine.children="append">
+            <!-- Main-Class -->
+            <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                <mainClass>org.aind.bigstitcher.qc.FuseCompositeOverlaps</mainClass>
+            </transformer>
+            </transformers>
+        </configuration>
+        </execution>
+
+        <!-- Shaded JAR with main=FuseCompositeVolume (classifier=fuse-composite) -->
+        <execution>
+        <id>shade-fuse-composite</id>
+        <phase>package</phase>
+        <goals><goal>shade</goal></goals>
+        <configuration>
+            <createDependencyReducedPom>false</createDependencyReducedPom>
+            <transformers combine.children="append"> 
+            <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                <mainClass>org.aind.bigstitcher.qc.FuseCompositeVolume</mainClass>
+            </transformer>
+            </transformers>
+            <shadedArtifactAttached>true</shadedArtifactAttached>
+            <shadedClassifierName>fuse-composite</shadedClassifierName>
+        </configuration>
+        </execution>
+    </executions>
+    </plugin>
+</plugins>
+</build>
 </project>
