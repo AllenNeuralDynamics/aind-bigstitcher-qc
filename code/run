@@ -2,12 +2,17 @@
 
 set -ex
 
-java -Xms64g -Xmx64g -Djava.awt.headless=true -jar \
-/aind-bigstitcher-qc/code/bigstitcher-qc/target/bigstitcher-qc-1.0.0-SNAPSHOT.jar \
+export AWS_REGION=${9:-"us-west-2"}
+export AWS_MAX_ATTEMPTS=${10:-"10"}
+export AWS_RETRY_MODE=${11:-"adaptive"}
+
+java -Xmx${12:-"128"}g -Djava.awt.headless=true -jar \
+/aind-bigstitcher-qc/code/bigstitcher-qc/target/bigstitcher-qc-1.0.0-SNAPSHOT-fuse-composite.jar \
 $1 \
-/results/out \
---anisotropy $2 \
---downsampling $3 \
---interpolation $4 \
---max-downsampling-levels $5 \
---display-max $6
+${2:-"/results"} \
+--anisotropy ${3:-"1.0"} \
+--downsampling ${4:-"8"} \
+--interpolation ${5:-"1"} \
+--max-downsampling-levels ${6:-"5"} \
+--display-max ${7:-"1000"} \
+--color-mode ${8:-"view"}

@@ -9,6 +9,12 @@
 			"required": true
 		},
 		{
+			"id": "DObwpvJvL17sI2hG",
+			"name": "output-path",
+			"type": "text",
+			"value_type": "string"
+		},
+		{
 			"id": "ykzXghh3p3kFlt3Q",
 			"name": "anisotropy-factor",
 			"type": "text",
@@ -44,6 +50,24 @@
 			"type": "text",
 			"value_type": "number",
 			"default_value": "100"
+		},
+		{
+			"id": "5EK6jptMqvAdf2AI",
+			"name": "color-mode",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "view",
+			"extra_data": [
+				"view",
+				"illumination"
+			]
+		},
+		{
+			"id": "OdJ57m7DtdKzvuaC",
+			"name": "aws-region",
+			"type": "text",
+			"value_type": "string",
+			"default_value": "us-west-2"
 		}
 	]
 }
