@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Generate a Neuroglancer URL that visualises all per-crop OME-Zarr volumes
-in a single image layer using a custom RGB shader.
+in a single image layer using a custom RGB shader, or build multiple layers
+from explicit S3-hosted datasets.
 
 Each crop is assumed to contain three channels (RGB) that should be rendered
 as a colour image. The script emits a Neuroglancer state URL referencing every
@@ -12,11 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import zarr
@@ -24,12 +24,24 @@ import zarr
 
 @dataclass
 class CropInfo:
-    path: Path
+    storage_path: str
     dataset_path: str
     axes: List[Dict]
     shape: Tuple[int, ...]
     scale: np.ndarray
     translation: np.ndarray
+    filesystem_path: Optional[Path] = None
+    display_name: Optional[str] = None
+
+
+@dataclass
+class LayerSpec:
+    name: str
+    crops: List[CropInfo]
+    shader: str
+    template: str
+    root: Optional[Path] = None
+    path_prefix: Optional[str] = None
 
 
 DEFAULT_SHADER = """\
@@ -45,13 +57,20 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--root",
-        required=True,
         type=Path,
         help="Root directory containing *.ome.zarr crops.",
     )
     parser.add_argument(
+        "--s3-paths",
+        nargs="+",
+        help=(
+            "List of S3 URIs pointing to *.ome.zarr datasets. "
+            "Each dataset will become its own Neuroglancer layer."
+        ),
+    )
+    parser.add_argument(
         "--viewer",
-        default="https://neuroglancer.demo.appspot.com/#!",
+        default="https://neuroglancer-demo.appspot.com/#!",
         help="Base Neuroglancer viewer URL prefix.",
     )
     parser.add_argument(
@@ -93,8 +112,10 @@ def find_ome_zarrs(root: Path) -> List[Path]:
     return sorted(path for path in root.rglob("*.ome.zarr") if path.is_dir())
 
 
-def load_crop(path: Path) -> CropInfo:
-    group = zarr.open_group(str(path), mode="r")
+def load_crop(path: Union[Path, str]) -> CropInfo:
+    filesystem_path = path if isinstance(path, Path) else None
+    storage_path = path.as_posix() if isinstance(path, Path) else str(path)
+    group = zarr.open_group(storage_path, mode="r")
     multiscales = group.attrs.get("multiscales")
     if not multiscales:
         raise ValueError(f"{path} missing 'multiscales' attribute")
@@ -108,13 +129,24 @@ def load_crop(path: Path) -> CropInfo:
     scale = _find_transform(transforms, "scale")
     translation = _find_transform(transforms, "translation")
     return CropInfo(
-        path=path,
+        storage_path=storage_path,
         dataset_path=dataset["path"],
         axes=meta.get("axes", []),
         shape=arr.shape,
         scale=scale,
         translation=translation,
+        filesystem_path=filesystem_path,
+        display_name=_derive_display_name(storage_path, filesystem_path),
     )
+
+
+def _derive_display_name(storage_path: str, filesystem_path: Optional[Path]) -> str:
+    if filesystem_path is not None:
+        return filesystem_path.name
+    stripped = storage_path.rstrip("/#")
+    if not stripped:
+        return "source"
+    return Path(stripped).name or stripped
 
 
 def _find_transform(transforms: Sequence[Dict], key: str) -> np.ndarray:
@@ -154,15 +186,24 @@ def axis_indices(axes: Sequence[Dict]) -> Dict[str, int]:
 
 def build_source_url(
     crop: CropInfo,
-    root: Path,
+    root: Optional[Path],
     path_prefix: Optional[str],
     template: str,
 ) -> str:
-    if path_prefix:
-        rel = crop.path.relative_to(root)
-        data_path = f"{path_prefix.rstrip('/')}/{rel.as_posix()}"
-    else:
-        data_path = crop.path.as_posix()
+    data_path: Optional[str] = None
+    if crop.filesystem_path is not None:
+        rel_path: Optional[Path] = None
+        if root is not None:
+            try:
+                rel_path = crop.filesystem_path.relative_to(root)
+            except ValueError:
+                rel_path = None
+        if path_prefix and rel_path is not None:
+            data_path = f"{path_prefix.rstrip('/')}/{rel_path.as_posix()}"
+        else:
+            data_path = crop.filesystem_path.as_posix()
+    if data_path is None:
+        data_path = crop.storage_path
     return template.format(data_path=data_path, dataset=crop.dataset_path)
 
 
@@ -172,59 +213,59 @@ def load_shader(shader_file: Optional[Path]) -> str:
     return shader_file.read_text(encoding="utf-8")
 
 
-def build_state(
-    crops: List[CropInfo],
-    root: Path,
-    path_prefix: Optional[str],
-    template: str,
-    layer_name: str,
-    shader: str,
-) -> Dict:
-    if not crops:
+def build_state(layers: List[LayerSpec]) -> Dict:
+    all_crops = [crop for layer in layers for crop in layer.crops]
+    if not all_crops:
         raise ValueError("No crops found to include in Neuroglancer state")
 
-    axis_infos = extract_axis_info(crops[0])
+    axis_infos = extract_axis_info(all_crops[0])
     canonical_axes = determine_axes_order(axis_infos)
 
     ndim = len(axis_infos)
-    sources: List[Dict] = []
     dimension_map = build_dimension_map(axis_infos)
 
-    for crop in crops:
-        url = build_source_url(crop, root, path_prefix, template)
-        matrix = [[1.0 if i == j else 0.0 for j in range(ndim + 1)] for i in range(ndim)]
-        transform = {
-            "matrix": matrix,
-            "outputDimensions": {key: value[:] for key, value in dimension_map.items()},
-        }
-        sources.append(
+    layer_defs: List[Dict] = []
+    for spec in layers:
+        sources: List[Dict] = []
+        for crop in spec.crops:
+            url = build_source_url(crop, spec.root, spec.path_prefix, spec.template)
+            matrix = [[1.0 if i == j else 0.0 for j in range(ndim + 1)] for i in range(ndim)]
+            transform = {
+                "matrix": matrix,
+                "outputDimensions": {key: value[:] for key, value in dimension_map.items()},
+            }
+            sources.append(
+                {
+                    "url": url,
+                    "transform": transform,
+                    "subsourceId": crop.display_name or crop.dataset_path,
+                }
+            )
+        layer_defs.append(
             {
-                "url": url,
-                "transform": transform,
-                "subsourceId": crop.path.name,
+                "type": "image",
+                "name": spec.name,
+                "visible": True,
+                "shader": spec.shader,
+                "source": sources,
             }
         )
-    min_corner, max_corner = bounding_box(crops, canonical_axes)
+
+    min_corner, max_corner = bounding_box(all_crops, canonical_axes)
     center = (min_corner + max_corner) * 0.5
     extent = max((max_corner - min_corner).tolist() or [1.0])
     cross_section = max(1.0, extent * 0.5)
     projection = max(1024.0, extent * 2.0)
 
-    layer: Dict = {
-        "type": "image",
-        "name": layer_name,
-        "visible": True,
-        "shader": shader,
-        "source": sources,
-    }
+    selected_layer_name = layer_defs[0]["name"] if layer_defs else ""
 
     state = {
         "dimensions": {key: value[:] for key, value in dimension_map.items()},
         "position": center.tolist()[: len(canonical_axes)],
         "crossSectionScale": cross_section,
         "projectionScale": projection,
-        "layers": [layer],
-        "selectedLayer": {"visible": True, "layer": layer_name},
+        "layers": layer_defs,
+        "selectedLayer": {"visible": True, "layer": selected_layer_name},
         "layout": "xy",
     }
     return state
@@ -379,24 +420,50 @@ def write_output(path: Path, url: str, state: Dict) -> None:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
-    root = args.root.resolve()
-    if not root.is_dir():
+    root = args.root.resolve() if args.root else None
+    if root and not root.is_dir():
         raise SystemExit(f"{root} is not a directory")
 
-    ome_zarrs = find_ome_zarrs(root)
-    if not ome_zarrs:
-        raise SystemExit(f"No *.ome.zarr directories found under {root}")
+    if root is None and not args.s3_paths:
+        raise SystemExit("Either --root or --s3-paths must be provided")
 
-    crops = [load_crop(path) for path in ome_zarrs]
     shader = load_shader(args.shader_file)
-    state = build_state(
-        crops=crops,
-        root=root,
-        path_prefix=args.path_prefix,
-        template=args.url_template,
-        layer_name=args.layer_name,
-        shader=shader,
-    )
+    layers: List[LayerSpec] = []
+
+    if root is not None:
+        ome_zarrs = find_ome_zarrs(root)
+        if ome_zarrs:
+            crops = [load_crop(path) for path in ome_zarrs]
+            layers.append(
+                LayerSpec(
+                    name=args.layer_name,
+                    crops=crops,
+                    shader=shader,
+                    template=args.url_template,
+                    root=root,
+                    path_prefix=args.path_prefix,
+                )
+            )
+        elif not args.s3_paths:
+            raise SystemExit(f"No *.ome.zarr directories found under {root}")
+
+    if args.s3_paths:
+        for idx, s3_path in enumerate(args.s3_paths, start=1):
+            crop = load_crop(s3_path)
+            layer_name = crop.display_name or f"dataset_{idx}"
+            layers.append(
+                LayerSpec(
+                    name=layer_name,
+                    crops=[crop],
+                    shader=shader,
+                    template=args.url_template,
+                )
+            )
+
+    if not layers:
+        raise SystemExit("No datasets available to build Neuroglancer state")
+
+    state = build_state(layers)
     url = encode_url(state, args.viewer)
     print(url)
     if args.output:
