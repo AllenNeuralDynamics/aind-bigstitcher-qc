@@ -70,7 +70,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--viewer",
-        default="https://neuroglancer.demo.appspot.com/#!",
+        default="https://neuroglancer-demo.appspot.com/#!",
         help="Base Neuroglancer viewer URL prefix.",
     )
     parser.add_argument(
