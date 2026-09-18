@@ -25,16 +25,22 @@ final class ZarrUtils {
     private ZarrUtils() {
     }
 
-    static int[] defaultBlockSize(final long[] spatialDims, final Integer userDefinedBlockSize) {
-        final int override = userDefinedBlockSize != null ? userDefinedBlockSize : -1;
+        static int[] defaultBlockSize(final long[] spatialDims, final int[] userDefinedBlockSize) {
+        final int[] override = userDefinedBlockSize;
         return new int[] {
-                override > 0 ? override : blockSizeFor(spatialDims[0]),
-                override > 0 ? override : blockSizeFor(spatialDims[1]),
-                override > 0 ? override : blockSizeFor(spatialDims[2]),
-                3,
-                1
+            override != null && override.length > 0 && override[0] > 0
+                ? override[0]
+                : blockSizeFor(spatialDims[0]),
+            override != null && override.length > 1 && override[1] > 0
+                ? override[1]
+                : blockSizeFor(spatialDims[1]),
+            override != null && override.length > 2 && override[2] > 0
+                ? override[2]
+                : blockSizeFor(spatialDims[2]),
+            3,
+            1
         };
-    }
+        }
 
     private static int blockSizeFor(final long dim) {
         return (int) Math.max(1, Math.min(dim, 128));

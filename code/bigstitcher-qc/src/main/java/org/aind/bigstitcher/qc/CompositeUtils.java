@@ -149,7 +149,7 @@ final class CompositeUtils {
             final CompositeBlockRenderer overlay,
             final String containerLocation,
             final String datasetLabel,
-            final Integer userDefinedBlockSize,
+            final int[] userDefinedBlockSize,
             final int maxDownsamplingLevels,
             final String unit
     ) throws IOException {

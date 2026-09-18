@@ -46,7 +46,7 @@ public class FuseCompositeOverlaps {
     private static final double DEFAULT_DOWNSAMPLING = 8.0;
     private static final int DEFAULT_MAX_DOWNSAMPLING_LEVELS = 7;
     private static String omeZarrRoot;
-    private static Integer userDefinedBlockSize;
+    private static int[] userDefinedBlockSize;
     private static final String UNIT_PIXEL = "micrometer";
     private static int maxDownsamplingLevels = DEFAULT_MAX_DOWNSAMPLING_LEVELS;
 
@@ -62,8 +62,12 @@ public class FuseCompositeOverlaps {
         @Parameters(index = "1", paramLabel = "OUTPUT", description = "Root directory or URI where OME-Zarr crops will be written.")
         String outputRoot;
 
-        @Option(names = "--block-size", paramLabel = "INT", description = "Override cubic block size in voxels.")
-        Integer blockSizeOverride;
+        @Option(
+            names = "--block-size",
+            paramLabel = "X,Y,Z",
+            description = "Override block size in voxels as comma-separated X,Y,Z (e.g. 128,256,256)."
+        )
+        String blockSizeOverride;
 
         @Option(
                 names = "--anisotropy",
@@ -125,8 +129,10 @@ public class FuseCompositeOverlaps {
         if (CommandLine.printHelpIfRequested(parseResult))
             return;
 
-        if (options.blockSizeOverride != null && options.blockSizeOverride <= 0) {
-            commandLine.getErr().println("Block size must be a positive integer.");
+        try {
+            userDefinedBlockSize = Utils.parseBlockSizeCsv(options.blockSizeOverride);
+        } catch (IllegalArgumentException e) {
+            commandLine.getErr().println(e.getMessage());
             commandLine.usage(commandLine.getErr());
             return;
         }
@@ -150,7 +156,7 @@ public class FuseCompositeOverlaps {
         }
 
         omeZarrRoot = Utils.normalizeOutputRoot(options.outputRoot);
-        userDefinedBlockSize = options.blockSizeOverride;
+        // userDefinedBlockSize already parsed above
         displayMax = (float) options.displayMax;
         maxDownsamplingLevels = options.maxDownsamplingLevels;
         interpolation = options.interpolation;
@@ -221,7 +227,7 @@ public class FuseCompositeOverlaps {
                 );
 
                 final String name = "overlay_tile" + tile1.illuminationId + "_tile" + tile2.illuminationId;
-                exportCropAsOmeZarr(overlay, "split-affine/" + name);
+                exportCropAsOmeZarr(overlay, name);
                 Utils.clearImgLoaderCache(spimData);
 
                 System.out.println("Created ARGB overlay crop for tiles (" + tile1.illuminationId + "," + tile2.illuminationId + ") "

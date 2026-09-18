@@ -220,4 +220,38 @@ final class Utils {
         return uri.toString();
     }
 
+    static int[] parseBlockSizeCsv(final String raw) {
+        if (raw == null)
+            return null;
+        final String trimmed = raw.trim();
+        if (trimmed.isEmpty())
+            return null;
+
+        final String[] parts = trimmed.split(",");
+        if (parts.length != 3) {
+            throw new IllegalArgumentException(
+                    "Block size must be three comma-separated positive integers, e.g. 128,256,256."
+            );
+        }
+
+        final int[] result = new int[3];
+        try {
+            for (int i = 0; i < 3; i++) {
+                final int value = Integer.parseInt(parts[i].trim());
+                if (value <= 0) {
+                    throw new IllegalArgumentException(
+                            "Block size must be three comma-separated positive integers, e.g. 128,256,256."
+                    );
+                }
+                result[i] = value;
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    "Block size must be three comma-separated positive integers, e.g. 128,256,256."
+            );
+        }
+
+        return result;
+    }
+
 }
