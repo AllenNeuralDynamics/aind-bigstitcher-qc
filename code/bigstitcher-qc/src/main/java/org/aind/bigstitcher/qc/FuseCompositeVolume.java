@@ -39,7 +39,7 @@ public class FuseCompositeVolume {
     private static final String UNIT_PIXEL = "micrometer";
 
     private static String omeZarrRoot;
-    private static Integer userDefinedBlockSize;
+    private static int[] userDefinedBlockSize;
     private static int maxDownsamplingLevels = DEFAULT_MAX_DOWNSAMPLING_LEVELS;
     private static int interpolation = DEFAULT_INTERPOLATION;
 
@@ -55,8 +55,12 @@ public class FuseCompositeVolume {
         @Parameters(index = "1", paramLabel = "OUTPUT", description = "Root directory or URI where the OME-Zarr volume will be written.")
         String outputRoot;
 
-        @Option(names = "--block-size", paramLabel = "INT", description = "Override cubic block size in voxels.")
-        Integer blockSizeOverride;
+        @Option(
+            names = "--block-size",
+            paramLabel = "X,Y,Z",
+            description = "Override block size in voxels as comma-separated X,Y,Z (e.g. 128,256,256)."
+        )
+        String blockSizeOverride;
 
         @Option(
                 names = "--anisotropy",
@@ -134,8 +138,10 @@ public class FuseCompositeVolume {
         if (CommandLine.printHelpIfRequested(parseResult))
             return;
 
-        if (options.blockSizeOverride != null && options.blockSizeOverride <= 0) {
-            commandLine.getErr().println("Block size must be a positive integer.");
+        try {
+            userDefinedBlockSize = Utils.parseBlockSizeCsv(options.blockSizeOverride);
+        } catch (IllegalArgumentException e) {
+            commandLine.getErr().println(e.getMessage());
             commandLine.usage(commandLine.getErr());
             return;
         }
@@ -169,7 +175,7 @@ public class FuseCompositeVolume {
 
         omeZarrRoot = Utils.normalizeOutputRoot(options.outputRoot);
         System.out.println("OME-Zarr output root: " + omeZarrRoot);
-        userDefinedBlockSize = options.blockSizeOverride;
+        // userDefinedBlockSize already parsed above
         displayMax = (float) options.displayMax;
         maxDownsamplingLevels = options.maxDownsamplingLevels;
         interpolation = options.interpolation;
