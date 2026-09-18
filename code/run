@@ -4,15 +4,18 @@ set -ex
 
 export AWS_REGION=${9:-"us-west-2"}
 export AWS_MAX_ATTEMPTS=${10:-"10"}
-export AWS_RETRY_MODE=${11:-"adaptive"}
+export AWS_RETRY_MODE=${11:-"standard"}
 
-java -Xmx${12:-"128"}g -Djava.awt.headless=true -jar \
+time java \
+  -Xms${12:-"200"}g \
+  -Xmx${12:-"200"}g \
+  -Djava.awt.headless=true -jar \
 /aind-bigstitcher-qc/code/bigstitcher-qc/target/bigstitcher-qc-1.0.0-SNAPSHOT-fuse-composite.jar \
-$1 \
-${2:-"/results"} \
---anisotropy ${3:-"1.0"} \
---downsampling ${4:-"8"} \
---interpolation ${5:-"1"} \
---max-downsampling-levels ${6:-"5"} \
---display-max ${7:-"1000"} \
---color-mode ${8:-"view"}
+  $1 \
+  ${2:-"/results"} \
+  --anisotropy ${3:-"1.0"} \
+  --downsampling ${4:-"8"} \
+  --interpolation ${5:-"1"} \
+  --max-downsampling-levels ${6:-"5"} \
+  --display-max ${7:-"100"} \
+  --color-mode ${8:-"illumination"}
