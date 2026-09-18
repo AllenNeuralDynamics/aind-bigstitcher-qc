@@ -43,12 +43,13 @@ class LayerSpec:
     root: Optional[Path] = None
     path_prefix: Optional[str] = None
 
-
 DEFAULT_SHADER = """\
-void main () {
-  emitRGB(vec3(toNormalized(getDataValue(0)),
-               toNormalized(getDataValue(1)),
-               toNormalized(getDataValue(2))));
+#uicontrol invlerp red(channel=0)
+#uicontrol invlerp green(channel=1)
+#uicontrol invlerp blue(channel=2)
+
+void main() {
+  emitRGB(vec3(red(), green(), blue()));
 }
 """.strip()
 
@@ -57,7 +58,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--root",
-        type=Path,
+        type=str,
         help="Root directory containing *.ome.zarr crops.",
     )
     parser.add_argument(
@@ -108,8 +109,36 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def find_ome_zarrs(root: Path) -> List[Path]:
+def is_s3_uri(path: str) -> bool:
+    return path.startswith("s3://")
+
+
+def find_local_ome_zarrs(root: Path) -> List[Path]:
     return sorted(path for path in root.rglob("*.ome.zarr") if path.is_dir())
+
+
+def find_s3_ome_zarrs(root: str) -> List[str]:
+    try:
+        import fsspec
+    except ImportError as exc:
+        raise SystemExit("fsspec is required to search for S3 paths") from exc
+
+    fs = fsspec.filesystem("s3")
+    cleaned_root = root.rstrip("/")
+
+    if cleaned_root.endswith(".ome.zarr"):
+        return [cleaned_root]
+
+    # fs.find returns all objects under the prefix; collect unique *.ome.zarr prefixes.
+    candidates = fs.find(f"{cleaned_root}/")
+    zarr_dirs = set()
+    for candidate in candidates:
+        if ".ome.zarr" not in candidate:
+            continue
+        base, _ = candidate.split(".ome.zarr", 1)
+        zarr_dirs.add(f"s3://{base}.ome.zarr")
+
+    return sorted(zarr_dirs)
 
 
 def load_crop(path: Union[Path, str]) -> CropInfo:
@@ -420,18 +449,27 @@ def write_output(path: Path, url: str, state: Dict) -> None:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
-    root = args.root.resolve() if args.root else None
-    if root and not root.is_dir():
-        raise SystemExit(f"{root} is not a directory")
+    root_arg = args.root
+    root: Optional[Path] = None
+    s3_root: Optional[str] = None
 
-    if root is None and not args.s3_paths:
+    if root_arg:
+        if is_s3_uri(root_arg):
+            s3_root = root_arg.rstrip("/")
+            print(s3_root)
+        else:
+            root = Path(root_arg).resolve()
+            if not root.is_dir():
+                raise SystemExit(f"{root} is not a directory")
+
+    if root is None and s3_root is None and not args.s3_paths:
         raise SystemExit("Either --root or --s3-paths must be provided")
 
     shader = load_shader(args.shader_file)
     layers: List[LayerSpec] = []
 
     if root is not None:
-        ome_zarrs = find_ome_zarrs(root)
+        ome_zarrs = find_local_ome_zarrs(root)
         if ome_zarrs:
             crops = [load_crop(path) for path in ome_zarrs]
             layers.append(
@@ -446,6 +484,22 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             )
         elif not args.s3_paths:
             raise SystemExit(f"No *.ome.zarr directories found under {root}")
+
+    if s3_root is not None:
+        ome_zarrs = find_s3_ome_zarrs(s3_root)
+        if ome_zarrs:
+            crops = [load_crop(path) for path in ome_zarrs]
+            layers.append(
+                LayerSpec(
+                    name=args.layer_name,
+                    crops=crops,
+                    shader=shader,
+                    template=args.url_template,
+                    path_prefix=args.path_prefix,
+                )
+            )
+        elif not args.s3_paths:
+            raise SystemExit(f"No *.ome.zarr directories found under {s3_root}")
 
     if args.s3_paths:
         for idx, s3_path in enumerate(args.s3_paths, start=1):
