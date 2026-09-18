@@ -4,7 +4,7 @@ FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_ASKPASS
-COPY git-askpass /git-askpass
+COPY git-ask-pass /git-ask-pass
 
 # ---- Install Azul Zulu JDK 8u462 (with JavaFX) ----
 ARG AZUL_JDK_URL="https://cdn.azul.com/zulu/bin/zulu8.88.0.19-ca-fx-jdk8.0.462-linux_x64.tar.gz"
