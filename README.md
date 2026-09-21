@@ -78,7 +78,7 @@ Command
 
 Positional
 - `XML` — path to BigStitcher `SpimData2` XML
-- `OUTPUT` — container location (local dir or URI). For S3, use `s3://bucket/prefix/volume-overlay.ome.zarr`
+- `OUTPUT` — container location (local dir or URI). For S3, use `s3://bucket/prefix/volume-overlay.ome.zarr`. The `code/run` wrapper permits this argument to be omitted or blank; in that case, it reads `s3_xml_path` from `/data/processing.json` and writes to an `overlay` container beside that XML.
 
 Options (in addition to the ones above)
 - `--dataset-name NAME` — name in NGFF metadata (default: `volume-overlay`)
