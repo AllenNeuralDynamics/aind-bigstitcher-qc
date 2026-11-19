@@ -1,11 +1,15 @@
 package org.aind.bigstitcher.qc;
 
 import bdv.util.MipmapTransforms;
+import com.amazonaws.AmazonServiceException;
+import com.amazonaws.retry.RetryUtils;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import net.imglib2.img.array.ArrayImg;
@@ -21,6 +25,16 @@ import org.janelia.saalfeldlab.n5.imglib2.N5Utils;
 import org.janelia.saalfeldlab.n5.universe.metadata.ome.ngff.v04.OmeNgffMultiScaleMetadata;
 
 final class ZarrUtils {
+
+    /*
+     * Retry policy for writes to the output container. The AWS SDK already retries each HTTP
+     * request (AWS_MAX_ATTEMPTS), but once it gives up, a single failed request would abort the
+     * whole export. Every operation wrapped in withRetries() rewrites the same keys, so repeating
+     * it is safe.
+     */
+    private static final int MAX_WRITE_ATTEMPTS = 6;
+    private static final long INITIAL_BACKOFF_MS = 2_000;
+    private static final long MAX_BACKOFF_MS = 60_000;
 
     private ZarrUtils() {
     }
@@ -110,7 +124,9 @@ final class ZarrUtils {
                 //         blockMin[0], blockMin[1], blockMin[2], (t1 - t0)));
 
                 final long[] gridOffset = new long[] { blockCopy[2][0], blockCopy[2][1], blockCopy[2][2], 0, 0 };
-                N5Utils.saveNonEmptyBlock(blockImg, writer, levelInfo.dataset, gridOffset, new UnsignedByteType());
+                withRetries(
+                        "writing " + levelInfo.dataset + " block " + Arrays.toString(gridOffset),
+                        () -> N5Utils.saveNonEmptyBlock(blockImg, writer, levelInfo.dataset, gridOffset, new UnsignedByteType()));
                 return null;
             }));
         }
@@ -135,9 +151,9 @@ final class ZarrUtils {
 
             for (long[][] gridBlock : grid) {
                 final long[][] blockCopy = cloneGridBlock(gridBlock);
-                futures.add(executor.submit(() -> {
-                    N5ApiTools.writeDownsampledBlock(writer, current, previous, blockCopy);
-                }));
+                futures.add(executor.submit(() -> withRetries(
+                        "writing " + current.dataset + " block " + Arrays.toString(blockCopy[2]),
+                        () -> N5ApiTools.writeDownsampledBlock(writer, current, previous, blockCopy))));
             }
 
             waitForFutures(futures);
@@ -173,7 +189,69 @@ final class ZarrUtils {
                 levelToTransform
         );
 
-        writer.setAttribute("/", "multiscales", metadata);
+        withRetries("writing OME-NGFF metadata", () -> writer.setAttribute("/", "multiscales", metadata));
+    }
+
+    /**
+     * Runs an idempotent write, retrying it with exponential backoff when it fails with a
+     * transient error (see {@link #isTransient}). Non-transient errors and the error from the
+     * final attempt are rethrown unchanged.
+     */
+    static void withRetries(final String description, final Runnable write) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                write.run();
+                return;
+            } catch (final RuntimeException e) {
+                if (attempt >= MAX_WRITE_ATTEMPTS || !isTransient(e))
+                    throw e;
+
+                final long backoffMs = backoffMillis(attempt);
+                System.err.println(String.format(
+                        "Transient error while %s (attempt %d of %d); retrying in %d ms. Cause: %s",
+                        description, attempt, MAX_WRITE_ATTEMPTS, backoffMs, rootCause(e)));
+                try {
+                    Thread.sleep(backoffMs);
+                } catch (final InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    e.addSuppressed(interrupted);
+                    throw e;
+                }
+            }
+        }
+    }
+
+    /**
+     * True if the failure is worth retrying: S3 5xx / throttling / request-timeout responses and
+     * network-level I/O errors (e.g. "NoHttpResponseException: The target server failed to
+     * respond", connection resets, socket timeouts). Other service errors such as 403 or 404 are
+     * permanent.
+     */
+    static boolean isTransient(final Throwable error) {
+        int depth = 0;
+        for (Throwable t = error; t != null && depth < 32; t = t.getCause(), depth++) {
+            if (t instanceof AmazonServiceException) {
+                final AmazonServiceException serviceException = (AmazonServiceException) t;
+                return RetryUtils.isRetryableServiceException(serviceException)
+                        || RetryUtils.isThrottlingException(serviceException);
+            }
+            if (t instanceof IOException)
+                return true;
+        }
+        return false;
+    }
+
+    /** Exponential backoff with jitter, so threads that failed together do not retry in lockstep. */
+    private static long backoffMillis(final int attempt) {
+        final long cap = Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS << Math.min(attempt - 1, 16));
+        return cap / 2 + ThreadLocalRandom.current().nextLong(cap / 2 + 1);
+    }
+
+    private static String rootCause(final Throwable error) {
+        Throwable root = error;
+        for (int depth = 0; root.getCause() != null && depth < 32; depth++)
+            root = root.getCause();
+        return root.toString();
     }
 
     static double[] computeLevelTranslation(final double[] worldMin3d, final double[] absoluteDownsampling) {

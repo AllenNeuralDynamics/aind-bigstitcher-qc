@@ -36,7 +36,6 @@ import org.janelia.saalfeldlab.n5.Compression;
 import org.janelia.saalfeldlab.n5.DataType;
 import org.janelia.saalfeldlab.n5.N5Writer;
 import org.janelia.saalfeldlab.n5.blosc.BloscCompression;
-import org.janelia.saalfeldlab.n5.universe.StorageFormat;
 import util.URITools;
 
 final class CompositeUtils {
@@ -184,9 +183,7 @@ final class CompositeUtils {
 
         final ExecutorService executor = Executors.newFixedThreadPool(Threads.numThreads());
         try {
-            try (final N5Writer writer = URITools.instantiateN5Writer(
-                    StorageFormat.ZARR,
-                    containerUri)) {
+            try (final N5Writer writer = ResilientS3N5Factory.openZarrWriter(containerUri)) {
 
                 final MultiResolutionLevelInfo[] pyramid = N5ApiTools.setupMultiResolutionPyramid(
                         writer,
